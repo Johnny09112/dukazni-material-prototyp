@@ -32,7 +32,7 @@ exports[`golden runy nad reálným obsahem > seed 7, greedy-affinity, 4 hráči,
     "seed": 7,
     "seq": 1,
     "type": "run_started",
-    "verzeObsahu": "f0aa105f",
+    "verzeObsahu": "e95ef1a1",
     "verzePravidel": "v0.1 / prototyp-mvp.md 2026-07-22 (po D7–D11)",
   },
   {
@@ -2860,7 +2860,7 @@ exports[`golden runy nad reálným obsahem > seed 42, greedy-affinity, 4 hráči
     "seed": 42,
     "seq": 1,
     "type": "run_started",
-    "verzeObsahu": "f0aa105f",
+    "verzeObsahu": "e95ef1a1",
     "verzePravidel": "v0.1 / prototyp-mvp.md 2026-07-22 (po D7–D11)",
   },
   {
