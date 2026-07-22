@@ -23,11 +23,15 @@
  *   nesmí hráče vyřadit ze hry. ENGINE: prokletá líznutá hlasem z auta se
  *   řadí do fronty, tj. působí od PŘÍŠTÍHO setkání.
  * - Zoufalé karty: dostupnost řídí `rules.zoufalePolitika` (pool | pool-once |
- *   dealt | none, viz rules.js; default pool = stálý pool dle
- *   sim-model-assumptions). Vždy: hratelné s 3+ zraněními, ignorují postih.
- *   ENGINE: zákaz tagu z prokleté platí i na zoufalé; Zbrklost zoufalou
- *   připouští (síla 3 = maximum). ENGINE: u pool-once mizí karta už zahráním
- *   (staging); u dealt se rozdává na startu bez opakování.
+ *   dealt | loot-node | loot-injury | none, viz rules.js; default pool =
+ *   stálý pool dle sim-model-assumptions). Vždy: hratelné s 3+ zraněními,
+ *   ignorují postih. ENGINE: zákaz tagu z prokleté platí i na zoufalé;
+ *   Zbrklost zoufalou připouští (síla 3 = maximum). ENGINE: u pool-once a
+ *   loot-node mizí karta už zahráním (staging); u dealt se rozdává na startu
+ *   bez opakování. ENGINE: loot-node líže do poolu jen po dokončeném BĚŽNÉM
+ *   slotu (uzel/Zátah); loot-injury vyhodnocuje utrpěná zranění po KAŽDÉM
+ *   setkání (i léčce/konfrontaci — spouštěčem je utrpení, ne postup) a
+ *   vyřazené postavy už nelížou.
  * - Hlas z auta: `rules.hlasZAutaBonus === 0` ⇒ větev „bonus" je mechanicky
  *   prázdná (příkaz platný, efekt žádný); prokletá větev beze změny.
  * - Léčka (práh 7) a konfrontace (práh 10) jsou VKLÁDANÁ extra setkání
@@ -114,15 +118,20 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
 
   /* --- zoufalé karty dle politiky (rules.zoufalePolitika, ADR-003) --- */
   const zoufalePolitika = rules.zoufalePolitika ?? 'pool';
-  /** Sdílený pool (pool: stálý; pool-once: zahraná karta mizí). */
+  /** Sdílený pool (pool: stálý; pool-once a loot-node: zahraná karta mizí). */
   let zoufalyPool =
     zoufalePolitika === 'pool' || zoufalePolitika === 'pool-once' ? zoufale.slice() : [];
+  /** Zásoba pro loot politiky (předmíchaná, líže se z konce). */
+  /** @type {object[]} */
+  let zoufalaZasoba = [];
   if (zoufalePolitika === 'dealt') {
-    // RNG se čerpá JEN u dealt — default 'pool' drží golden runy beze změny.
+    // RNG se čerpá JEN u ne-defaultních politik — 'pool' drží golden runy beze změny.
     const rozdane = rng.shuffle(zoufale);
     characters.forEach((c, i) => {
       c.zoufalaVRuce = rozdane.length > 0 ? rozdane[i % rozdane.length] : null;
     });
+  } else if (zoufalePolitika === 'loot-node' || zoufalePolitika === 'loot-injury') {
+    zoufalaZasoba = rng.shuffle(zoufale);
   }
 
   /* --- průběh runu --- */
@@ -321,8 +330,8 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
     let ruka = c.ruka.filter((k) => k.tag !== zakaz);
     let zoufaleVolby = [];
     if (c.zraneni >= rules.zoufalaOdZraneni) {
-      const kandidati =
-        zoufalePolitika === 'dealt' ? (c.zoufalaVRuce ? [c.zoufalaVRuce] : []) : zoufalyPool;
+      const osobni = zoufalePolitika === 'dealt' || zoufalePolitika === 'loot-injury';
+      const kandidati = osobni ? (c.zoufalaVRuce ? [c.zoufalaVRuce] : []) : zoufalyPool;
       zoufaleVolby = kandidati.filter((k) => k.tag !== zakaz);
     }
     if (ruka.length === 0 && zoufaleVolby.length === 0) {
@@ -540,6 +549,24 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
     if (e.druh === ENCOUNTER_KINDS.UZEL || e.druh === ENCOUNTER_KINDS.ZATAH) {
       completedNodes += 1;
       visited.add(e.uzel.id);
+      // loot-node: dokončený uzel (běžný slot) = 1 zoufalá ze zásoby do poolu.
+      if (zoufalePolitika === 'loot-node' && zoufalaZasoba.length > 0) {
+        zoufalyPool.push(zoufalaZasoba.pop());
+      }
+    }
+
+    // loot-injury: kdo v tomto setkání utrpěl zranění a má celkem dost,
+    // lízne osobní zoufalou (max 1 v držení; zásoba se nevrací).
+    if (zoufalePolitika === 'loot-injury') {
+      for (const c of characters) {
+        if (c.vyrazena || c.zoufalaVRuce || c.zraneni < rules.lootZoufalaOdZraneni) continue;
+        const utrpelZde = e.hody
+          .filter((h) => h.postava === c.id)
+          .reduce((soucet, h) => soucet + h.zraneni_pridana, 0);
+        if (utrpelZde >= 1 && zoufalaZasoba.length > 0) {
+          c.zoufalaVRuce = zoufalaZasoba.pop();
+        }
+      }
     }
 
     if (confrontationPending) {
@@ -682,9 +709,9 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
       if (!volba.zoufala) {
         const idx = c.ruka.findIndex((k) => k.id === kartaId);
         c.ruka.splice(idx, 1);
-      } else if (zoufalePolitika === 'pool-once') {
+      } else if (zoufalePolitika === 'pool-once' || zoufalePolitika === 'loot-node') {
         zoufalyPool = zoufalyPool.filter((k) => k.id !== kartaId);
-      } else if (zoufalePolitika === 'dealt') {
+      } else if (zoufalePolitika === 'dealt' || zoufalePolitika === 'loot-injury') {
         c.zoufalaVRuce = null;
       }
       encounter.zahrane.set(postavaId, volba);

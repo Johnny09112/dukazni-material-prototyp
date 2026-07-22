@@ -72,15 +72,26 @@ export const RULES = {
   /**
    * Politika dostupnosti zoufalých karet (kalibrační osa po 1. měření enginu
    * 2026-07-22 — zoufalé jako stálý pool zvedají greedy na ~97 % DORUČENO):
-   * - 'pool'      … současný stav dle sim-model-assumptions: stálý sdílený
-   *                 pool, kdokoli s 3+ zraněními hraje kdykoli kteroukoli.
-   * - 'pool-once' … sdílený pool, každá karta jde zahrát jen JEDNOU za run.
-   * - 'dealt'     … každý hráč dostane na startu 1 náhodnou zoufalou
-   *                 (bez opakování), hratelná od 3+ zranění, jednorázová.
-   * - 'none'      … bez zoufalých karet (ablační baseline).
+   * - 'pool'        … současný stav dle sim-model-assumptions: stálý sdílený
+   *                   pool, kdokoli s 3+ zraněními hraje kdykoli kteroukoli.
+   * - 'pool-once'   … sdílený pool, každá karta jde zahrát jen JEDNOU za run.
+   * - 'dealt'       … každý hráč dostane na startu 1 náhodnou zoufalou
+   *                   (bez opakování), hratelná od 3+ zranění, jednorázová.
+   * - 'loot-node'   … návrh uživatele 2026-07-22 (loot systém v design docích
+   *                   neexistuje — měřeno před rozhodnutím): po každém
+   *                   DOKONČENÉM uzlu (běžný slot vč. Zátahu; léčka/konfrontace
+   *                   ne) tým lízne 1 zoufalou ze zásoby 4 do sdíleného poolu —
+   *                   dostupnost náběhem, každá jednorázová.
+   * - 'loot-injury' … po setkání, v němž postava utrpěla ≥1 zranění a má
+   *                   celkem ≥lootZoufalaOdZraneni, si lízne OSOBNÍ zoufalou
+   *                   (max 1 v držení, jednorázová; hratelná od 3+ zranění).
+   * - 'none'        … bez zoufalých karet (ablační baseline).
    * DEFAULT zůstává 'pool', dokud nepadne designové rozhodnutí.
    */
   zoufalePolitika: 'pool',
+
+  /** Jen loot-injury: líznutí osobní zoufalé od tolika CELKOVÝCH zranění. */
+  lootZoufalaOdZraneni: 2,
 
   /**
    * Hlas z auta: vyřazený hráč dá spoluhráči +hlasZAutaBonus k hodu, NEBO mu

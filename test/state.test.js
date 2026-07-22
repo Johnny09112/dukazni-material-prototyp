@@ -391,6 +391,56 @@ describe('politika zoufalých karet (rules.zoufalePolitika)', () => {
     expect(zahranoNekde).toBe(true);
   });
 
+  it('loot-node: pool nabíhá po dokončených uzlech, karty jsou jednorázové', () => {
+    const rules = { ...RULES, zoufalePolitika: 'loot-node' };
+    let zahranoNekde = false;
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const events = drive(
+        createRun({ seed, content: obsahSeZoufalymi(), rules, players: hraci(2) }),
+        {
+          probe: (s, run) => {
+            if (s.dokoncenoUzlu === 0) {
+              // před dokončením prvního uzlu není ve hře žádná zoufalá
+              for (const p of s.postavy.filter((x) => !x.vyrazena)) {
+                expect(run.getLegalPlays(p.id).every((v) => !v.zoufala)).toBe(true);
+              }
+            }
+          },
+          pickPlay: prefZoufala,
+        }
+      );
+      const zoufale = events.filter((e) => e.type === 'card_played' && e.zoufala);
+      const poIds = new Map();
+      for (const z of zoufale) {
+        poIds.set(z.karta.id, (poIds.get(z.karta.id) ?? 0) + 1);
+        zahranoNekde = true;
+      }
+      for (const pocet of poIds.values()) expect(pocet).toBe(1); // jednorázové
+      expect(zoufale.length).toBeLessThanOrEqual(2); // zásoba = 2 karty v obsahu
+    }
+    expect(zahranoNekde).toBe(true);
+  });
+
+  it('loot-injury: osobní zoufalá přichází se zraněním, jednorázová, zásoba se nevrací', () => {
+    const rules = { ...RULES, zoufalePolitika: 'loot-injury' };
+    let zahranoNekde = false;
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const events = drive(
+        createRun({ seed, content: obsahSeZoufalymi(), rules, players: hraci(2) }),
+        { pickPlay: prefZoufala }
+      );
+      const zoufale = events.filter((e) => e.type === 'card_played' && e.zoufala);
+      const poIds = new Map();
+      for (const z of zoufale) {
+        poIds.set(z.karta.id, (poIds.get(z.karta.id) ?? 0) + 1);
+        zahranoNekde = true;
+      }
+      for (const pocet of poIds.values()) expect(pocet).toBe(1);
+      expect(zoufale.length).toBeLessThanOrEqual(2);
+    }
+    expect(zahranoNekde).toBe(true);
+  });
+
   it('none: zoufalé nejsou v nabídce a nikdy se nezahrají', () => {
     const rules = { ...RULES, zoufalePolitika: 'none' };
     const events = drive(

@@ -147,7 +147,7 @@ function main() {
     }
   }
   const politikyZoufalych = args.zoufale.split(',').map((s) => s.trim()).filter(Boolean);
-  const povolenePolitiky = ['pool', 'pool-once', 'dealt', 'none'];
+  const povolenePolitiky = ['pool', 'pool-once', 'dealt', 'loot-node', 'loot-injury', 'none'];
   for (const z of politikyZoufalych) {
     if (!povolenePolitiky.includes(z)) {
       throw new Error(`Neznámá politika zoufalých „${z}" (povolené: ${povolenePolitiky.join(', ')}).`);
