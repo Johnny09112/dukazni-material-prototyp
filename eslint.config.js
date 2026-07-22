@@ -20,6 +20,20 @@ export default [
     },
   },
   {
+    // UI vrstva běží v prohlížeči (Vite) — browser globals jen tady.
+    files: ['src/ui/**/*.js', 'src/main.js'],
+    languageOptions: {
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        Blob: 'readonly',
+        HTMLElement: 'readonly',
+      },
+    },
+  },
+  {
     // ADR-002: engine je deterministický — žádná náhoda ani hodiny mimo seedované RNG.
     files: ['src/engine/**/*.js'],
     rules: {
