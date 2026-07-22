@@ -69,7 +69,25 @@ export const RULES = {
   /** Zoufalé karty hratelné jen s 3+ zraněními; ignorují postih za zranění. */
   zoufalaOdZraneni: 3,
 
-  /** Hlas z auta: vyřazený hráč dá spoluhráči +1 k hodu, NEBO mu lízne prokletou. */
+  /**
+   * Politika dostupnosti zoufalých karet (kalibrační osa po 1. měření enginu
+   * 2026-07-22 — zoufalé jako stálý pool zvedají greedy na ~97 % DORUČENO):
+   * - 'pool'      … současný stav dle sim-model-assumptions: stálý sdílený
+   *                 pool, kdokoli s 3+ zraněními hraje kdykoli kteroukoli.
+   * - 'pool-once' … sdílený pool, každá karta jde zahrát jen JEDNOU za run.
+   * - 'dealt'     … každý hráč dostane na startu 1 náhodnou zoufalou
+   *                 (bez opakování), hratelná od 3+ zranění, jednorázová.
+   * - 'none'      … bez zoufalých karet (ablační baseline).
+   * DEFAULT zůstává 'pool', dokud nepadne designové rozhodnutí.
+   */
+  zoufalePolitika: 'pool',
+
+  /**
+   * Hlas z auta: vyřazený hráč dá spoluhráči +hlasZAutaBonus k hodu, NEBO mu
+   * lízne prokletou. Kalibrační osa: hodnota 0 = větev bonusu je mechanicky
+   * prázdná („nic") — příkaz zůstává platný, jen bez efektu; prokletá větev
+   * se nemění. (Čistší než větev rušit: tok API i UI zůstává stejný.)
+   */
   hlasZAutaBonus: 1,
 
   /** Prokletá „Ztráta důstojnosti": selže-li tým v uzlu, +1 Žár navíc (celkem +2). */

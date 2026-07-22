@@ -29,10 +29,14 @@ export function collectRunStats(events) {
     lecky: 0,
     konfrontace: 0,
     zatahy: 0,
+    zoufaleZahrane: 0,
   };
 
   for (const e of events) {
     switch (e.type) {
+      case 'card_played':
+        if (e.zoufala) stats.zoufaleZahrane += 1;
+        break;
       case 'heat_threshold':
         stats.prahy.push({ prah: e.prah, nodeIndex: e.nodeIndex });
         break;
@@ -71,13 +75,16 @@ export function collectRunStats(events) {
 }
 
 /**
- * Agregát jedné konfigurace (strategie × pronásledovatel).
+ * Agregát jedné konfigurace (strategie × pronásledovatel × varianta pravidel).
  * @param {string} strategie @param {string} pronasledovatel
+ * @param {string} [varianta] popisek varianty rules (např. "zoufale=pool,buff=1")
  */
-export function createAggregate(strategie, pronasledovatel) {
+export function createAggregate(strategie, pronasledovatel, varianta = '') {
   return {
     strategie,
     pronasledovatel,
+    varianta,
+    zoufaleZahrane: 0,
     runs: 0,
     doruceno: 0,
     priciny: /** @type {Record<string, number>} */ ({}),
@@ -135,6 +142,7 @@ export function addRun(agg, s) {
   agg.lecky += s.lecky;
   agg.konfrontace += s.konfrontace;
   agg.zatahy += s.zatahy;
+  agg.zoufaleZahrane += s.zoufaleZahrane;
 }
 
 /** Medián uzlu prvního prahu Žáru (jen runy, kde práh padl). */
@@ -157,6 +165,8 @@ export function finalizeAggregate(agg) {
   return {
     strategie: agg.strategie,
     pronasledovatel: agg.pronasledovatel,
+    varianta: agg.varianta,
+    zoufaleNaRun: agg.runs > 0 ? +(agg.zoufaleZahrane / agg.runs).toFixed(2) : 0,
     runs: agg.runs,
     dorucenoPct: pct(agg.doruceno),
     priciny: Object.fromEntries(
@@ -214,18 +224,18 @@ export function renderSummaryMd(meta, vysledky) {
   r.push(`- Runů na konfiguraci: **${meta.runsNaKonfiguraci}**, hráčů: **${meta.hracu}**, seedy od ${meta.seedOd}`);
   r.push(`- Verze obsahu: \`${meta.verzeObsahu}\`, pravidla: ${meta.verzePravidel}`);
   r.push('');
-  r.push('## Srovnání strategií');
+  r.push('## Srovnání konfigurací');
   r.push('');
-  r.push('| Strategie | Pronásledovatel | DORUČENO % | došly bedny % | všichni vyřazeni % | medián 1. prahu Žáru (uzel) | kolapsů/run | léček/run | konfrontací/run | Zátahů/run |');
-  r.push('|---|---|---|---|---|---|---|---|---|---|');
+  r.push('| Varianta | Strategie | Pronásledovatel | DORUČENO % | došly bedny % | všichni vyřazeni % | medián 1. prahu Žáru (uzel) | zoufalé/run | kolapsů/run | samou-modrinu % | obetni-beranek % |');
+  r.push('|---|---|---|---|---|---|---|---|---|---|---|');
   for (const v of vysledky) {
     r.push(
-      `| ${v.strategie} | ${v.pronasledovatel} | ${v.dorucenoPct} | ${v.priciny.dosly_bedny ?? 0} | ${v.priciny.vsichni_vyrazeni ?? 0} | ${v.medianPrvnihoPrahu ?? '—'} | ${v.kolapsyNaRun} | ${v.leckyNaRun} | ${v.konfrontaceNaRun} | ${v.zatahyNaRun} |`
+      `| ${v.varianta || '—'} | ${v.strategie} | ${v.pronasledovatel} | ${v.dorucenoPct} | ${v.priciny.dosly_bedny ?? 0} | ${v.priciny.vsichni_vyrazeni ?? 0} | ${v.medianPrvnihoPrahu ?? '—'} | ${v.zoufaleNaRun} | ${v.kolapsyNaRun} | ${v.cile['samou-modrinu']?.splnenoPct ?? '—'} | ${v.cile['obetni-beranek']?.splnenoPct ?? '—'} |`
     );
   }
   r.push('');
   for (const v of vysledky) {
-    r.push(`## ${v.strategie} × ${v.pronasledovatel}`);
+    r.push(`## ${v.varianta ? `${v.varianta} · ` : ''}${v.strategie} × ${v.pronasledovatel}`);
     r.push('');
     r.push(`- Runů: ${v.runs}, DORUČENO ${v.dorucenoPct} %, bez prahu Žáru ${v.runsBezPrahuPct} % runů`);
     r.push(`- Histogram uzlu 1. prahu: ${histText(v.prahHistogramy[0])}`);

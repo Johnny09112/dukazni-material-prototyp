@@ -330,6 +330,106 @@ describe('zoufalé karty', () => {
   });
 });
 
+describe('politika zoufalých karet (rules.zoufalePolitika)', () => {
+  /** Garantovaná zranění + 2 zoufalé lest karty (síla 3). */
+  function obsahSeZoufalymi() {
+    const afinity = { nasili: 0, lest: -2, uplatek: 0, utek: 0 };
+    return syntetickyObsah({
+      karty: [
+        ...syntetickeKarty(20, { tag: 'lest', sila: 1 }),
+        ...prokleteKopie('krec'),
+        { id: 'zoufala-a', nazev: 'Zoufalá A', typ: 'zoufala', tag: 'lest', sila: 3, podminka: '3+ zranění', text: 't' },
+        { id: 'zoufala-b', nazev: 'Zoufalá B', typ: 'zoufala', tag: 'lest', sila: 3, podminka: '3+ zranění', text: 't' },
+      ],
+      uzly: syntetickeUzly({ afinity, tvrdost: 'zraneni' }),
+    });
+  }
+  const prefZoufala = (legal) => legal.find((v) => v.zoufala) ?? legal[0];
+
+  it('pool (default): zoufalé se hrají a neubývají', () => {
+    let zahranoCelkem = 0;
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const events = drive(
+        createRun({ seed, content: obsahSeZoufalymi(), rules: RULES, players: hraci(2) }),
+        { pickPlay: prefZoufala }
+      );
+      zahranoCelkem += events.filter((e) => e.type === 'card_played' && e.zoufala).length;
+    }
+    expect(zahranoCelkem).toBeGreaterThan(0);
+  });
+
+  it('pool-once: každá zoufalá jde za run zahrát jen jednou', () => {
+    const rules = { ...RULES, zoufalePolitika: 'pool-once' };
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const events = drive(
+        createRun({ seed, content: obsahSeZoufalymi(), rules, players: hraci(2) }),
+        { pickPlay: prefZoufala }
+      );
+      const zoufale = events.filter((e) => e.type === 'card_played' && e.zoufala);
+      const poIds = new Map();
+      for (const z of zoufale) poIds.set(z.karta.id, (poIds.get(z.karta.id) ?? 0) + 1);
+      for (const pocet of poIds.values()) expect(pocet).toBe(1);
+      expect(zoufale.length).toBeLessThanOrEqual(2); // v obsahu jsou 2 zoufalé
+    }
+  });
+
+  it('dealt: každá postava hraje svou rozdanou zoufalou nejvýš jednou', () => {
+    const rules = { ...RULES, zoufalePolitika: 'dealt' };
+    let zahranoNekde = false;
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const events = drive(
+        createRun({ seed, content: obsahSeZoufalymi(), rules, players: hraci(2) }),
+        { pickPlay: prefZoufala }
+      );
+      const poPostave = new Map();
+      for (const z of events.filter((e) => e.type === 'card_played' && e.zoufala)) {
+        poPostave.set(z.postava, (poPostave.get(z.postava) ?? 0) + 1);
+        zahranoNekde = true;
+      }
+      for (const pocet of poPostave.values()) expect(pocet).toBe(1);
+    }
+    expect(zahranoNekde).toBe(true);
+  });
+
+  it('none: zoufalé nejsou v nabídce a nikdy se nezahrají', () => {
+    const rules = { ...RULES, zoufalePolitika: 'none' };
+    const events = drive(
+      createRun({ seed: 1, content: obsahSeZoufalymi(), rules, players: hraci(2) }),
+      {
+        probe: (s, run) => {
+          for (const p of s.postavy.filter((x) => !x.vyrazena)) {
+            expect(run.getLegalPlays(p.id).every((v) => !v.zoufala)).toBe(true);
+          }
+        },
+        pickPlay: prefZoufala,
+      }
+    );
+    expect(events.some((e) => e.type === 'card_played' && e.zoufala)).toBe(false);
+  });
+
+  it('varianty nemění default: explicitní pool + buff 1 dává identický log jako RULES', () => {
+    const explicitni = { ...RULES, zoufalePolitika: 'pool', hlasZAutaBonus: 1 };
+    const a = drive(createRun({ seed: 13, content: obsahSeZoufalymi(), rules: RULES, players: hraci(2) }));
+    const b = drive(createRun({ seed: 13, content: obsahSeZoufalymi(), rules: explicitni, players: hraci(2) }));
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+});
+
+describe('hlas z auta s bonusem 0 (kalibrační varianta)', () => {
+  it('větev bonus je mechanicky prázdná — žádný hod nedostane kladný modifikátor', () => {
+    const rules = { ...RULES, hlasZAutaBonus: 0 };
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const events = drive(
+        createRun({ seed, content: obsahGarantovanaZraneni(), rules, players: hraci(4) }),
+        { pickVoice: (s) => ({ volba: 'bonus', cil: s.postavy.find((p) => !p.vyrazena).id }) }
+      );
+      for (const e of events.filter((x) => x.type === 'check_resolved')) {
+        expect(e.modifikatory).toBe(0); // prokleté jsou jen Křeč (bez modu hodu)
+      }
+    }
+  });
+});
+
 describe('hlas z auta', () => {
   it('bonus +1 se propíše do hodu cíle; prokletá jde cíli do fronty', () => {
     // hledáme seedy s oknem pro hlas z auta: 4 hráči kolabují rozfázovaně,

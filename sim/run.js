@@ -5,7 +5,12 @@
  * Použití:
  *   npm run sim -- --runs 2000 --players 4 \
  *     --strategy greedy-affinity,random,tag-spam:utek \
- *     --pursuer agent-malone,serif-brody --seed 1 [--events] [--out logs/moje-davka]
+ *     --pursuer agent-malone,serif-brody --seed 1 [--events] [--out logs/moje-davka] \
+ *     [--zoufale pool,pool-once,dealt,none] [--buff 1,0]
+ *
+ * Osy --zoufale (politika zoufalých karet) a --buff (bonus hlasu z auta)
+ * vytvářejí varianty `rules` objektu (ADR-003) — kalibrace bez forku kódu.
+ * Default: zoufale=pool, buff=1 (současná pravidla).
  *
  * Každá dávka = {verze obsahu, verze pravidel, strategie, pronásledovatel,
  * rozsah seedů} — plně reprodukovatelná. Výstup: <out>/summary.json +
@@ -46,6 +51,8 @@ function parseArgs(argv) {
     seed: 1,
     events: false,
     out: null,
+    zoufale: 'pool',
+    buff: '1',
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -56,6 +63,8 @@ function parseArgs(argv) {
     else if (a === '--seed') args.seed = Number(argv[++i]);
     else if (a === '--events') args.events = true;
     else if (a === '--out') args.out = argv[++i];
+    else if (a === '--zoufale') args.zoufale = argv[++i];
+    else if (a === '--buff') args.buff = argv[++i];
     else throw new Error(`Neznámý argument „${a}".`);
   }
   if (!Number.isInteger(args.runs) || args.runs < 1) throw new Error('--runs musí být kladné celé číslo.');
@@ -137,6 +146,19 @@ function main() {
       throw new Error(`Pronásledovatel „${p}" v obsahu není (k dispozici: ${content.pronasledovatele.map((x) => x.id).join(', ')}).`);
     }
   }
+  const politikyZoufalych = args.zoufale.split(',').map((s) => s.trim()).filter(Boolean);
+  const povolenePolitiky = ['pool', 'pool-once', 'dealt', 'none'];
+  for (const z of politikyZoufalych) {
+    if (!povolenePolitiky.includes(z)) {
+      throw new Error(`Neznámá politika zoufalých „${z}" (povolené: ${povolenePolitiky.join(', ')}).`);
+    }
+  }
+  const buffy = args.buff.split(',').map((s) => Number(s.trim()));
+  for (const b of buffy) {
+    if (!Number.isInteger(b) || b < 0) {
+      throw new Error(`--buff musí být nezáporná celá čísla (má „${args.buff}").`);
+    }
+  }
 
   const players = Array.from({ length: args.players }, (_, i) => ({
     id: `postava-${i + 1}`,
@@ -152,38 +174,46 @@ function main() {
   const zacatek = Date.now();
   const vysledky = [];
 
-  for (const strategyName of strategie) {
-    for (const pronasledovatelId of pronasledovatele) {
-      const agg = createAggregate(strategyName, pronasledovatelId);
-      /** @type {fs.WriteStream|null} */
-      let eventsStream = null;
-      if (args.events) {
-        eventsStream = fs.createWriteStream(
-          path.join(outDir, `events-${strategyName.replace(/[^a-z0-9-]/gi, '_')}-${pronasledovatelId}.jsonl`)
-        );
-      }
-      for (let i = 0; i < args.runs; i++) {
-        const seed = args.seed + i;
-        const events = playRun({
-          seed,
-          content,
-          rules: RULES,
-          players,
-          pronasledovatelId,
-          strategyName,
-        });
-        addRun(agg, collectRunStats(events));
-        if (eventsStream) {
-          for (const e of events) {
-            eventsStream.write(`${JSON.stringify({ strategie: strategyName, pronasledovatel: pronasledovatelId, ...e })}\n`);
+  for (const politikaZoufalych of politikyZoufalych) {
+    for (const buff of buffy) {
+      // Varianta pravidel jako data (ADR-003) — žádný fork resoluce.
+      const rules = { ...RULES, zoufalePolitika: politikaZoufalych, hlasZAutaBonus: buff };
+      const varianta = `zoufale=${politikaZoufalych},buff=${buff}`;
+      for (const strategyName of strategie) {
+        for (const pronasledovatelId of pronasledovatele) {
+          const agg = createAggregate(strategyName, pronasledovatelId, varianta);
+          /** @type {fs.WriteStream|null} */
+          let eventsStream = null;
+          if (args.events) {
+            const soubor = `events-${varianta.replace(/[^a-z0-9-]/gi, '_')}-${strategyName.replace(/[^a-z0-9-]/gi, '_')}-${pronasledovatelId}.jsonl`;
+            eventsStream = fs.createWriteStream(path.join(outDir, soubor));
           }
+          for (let i = 0; i < args.runs; i++) {
+            const seed = args.seed + i;
+            const events = playRun({
+              seed,
+              content,
+              rules,
+              players,
+              pronasledovatelId,
+              strategyName,
+            });
+            addRun(agg, collectRunStats(events));
+            if (eventsStream) {
+              for (const e of events) {
+                eventsStream.write(
+                  `${JSON.stringify({ varianta, strategie: strategyName, pronasledovatel: pronasledovatelId, ...e })}\n`
+                );
+              }
+            }
+          }
+          eventsStream?.end();
+          vysledky.push(finalizeAggregate(agg));
+          console.log(
+            `hotovo: ${varianta} · ${strategyName} × ${pronasledovatelId} — DORUČENO ${vysledky.at(-1).dorucenoPct} % (${args.runs} runů)`
+          );
         }
       }
-      eventsStream?.end();
-      vysledky.push(finalizeAggregate(agg));
-      console.log(
-        `hotovo: ${strategyName} × ${pronasledovatelId} — DORUČENO ${vysledky.at(-1).dorucenoPct} % (${args.runs} runů)`
-      );
     }
   }
 
@@ -193,6 +223,7 @@ function main() {
     hracu: args.players,
     verzeObsahu: content.verze,
     verzePravidel: RULES.verze,
+    varianty: { zoufale: politikyZoufalych, buff: buffy },
     trvaniMs: Date.now() - zacatek,
   };
   fs.writeFileSync(

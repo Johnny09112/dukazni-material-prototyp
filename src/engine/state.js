@@ -22,9 +22,14 @@
  *   ruka (a nejsou zoufalé), zákaz se pro volbu karty ignoruje — pravidlo
  *   nesmí hráče vyřadit ze hry. ENGINE: prokletá líznutá hlasem z auta se
  *   řadí do fronty, tj. působí od PŘÍŠTÍHO setkání.
- * - Zoufalé karty = stálý pool (neubývají); hratelné s 3+ zraněními, síla 3,
- *   ignorují postih. ENGINE: zákaz tagu z prokleté platí i na zoufalé;
- *   Zbrklost zoufalou připouští (síla 3 = maximum).
+ * - Zoufalé karty: dostupnost řídí `rules.zoufalePolitika` (pool | pool-once |
+ *   dealt | none, viz rules.js; default pool = stálý pool dle
+ *   sim-model-assumptions). Vždy: hratelné s 3+ zraněními, ignorují postih.
+ *   ENGINE: zákaz tagu z prokleté platí i na zoufalé; Zbrklost zoufalou
+ *   připouští (síla 3 = maximum). ENGINE: u pool-once mizí karta už zahráním
+ *   (staging); u dealt se rozdává na startu bez opakování.
+ * - Hlas z auta: `rules.hlasZAutaBonus === 0` ⇒ větev „bonus" je mechanicky
+ *   prázdná (příkaz platný, efekt žádný); prokletá větev beze změny.
  * - Léčka (práh 7) a konfrontace (práh 10) jsou VKLÁDANÁ extra setkání
  *   (neubírají slot ze 6 uzlů); Zátah (práh 5) NAHRADÍ obě nabízené cesty,
  *   čili běžný slot zabírá. Prahy jsou hranově spouštěné: vystřelí při
@@ -95,6 +100,7 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
     /** @type {object[]} */ prokleteFronta: [],
     /** @type {object|null} */ aktivniProkleta: null,
     /** @type {object|null} */ cil: null,
+    /** @type {object|null} */ zoufalaVRuce: null,
   }));
   for (const c of characters) {
     for (let i = 0; i < rules.velikostRuky; i++) c.ruka.push(drawBasic());
@@ -105,6 +111,19 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
   characters.forEach((c, i) => {
     c.cil = goalDeck[i] ?? null;
   });
+
+  /* --- zoufalé karty dle politiky (rules.zoufalePolitika, ADR-003) --- */
+  const zoufalePolitika = rules.zoufalePolitika ?? 'pool';
+  /** Sdílený pool (pool: stálý; pool-once: zahraná karta mizí). */
+  let zoufalyPool =
+    zoufalePolitika === 'pool' || zoufalePolitika === 'pool-once' ? zoufale.slice() : [];
+  if (zoufalePolitika === 'dealt') {
+    // RNG se čerpá JEN u dealt — default 'pool' drží golden runy beze změny.
+    const rozdane = rng.shuffle(zoufale);
+    characters.forEach((c, i) => {
+      c.zoufalaVRuce = rozdane.length > 0 ? rozdane[i % rozdane.length] : null;
+    });
+  }
 
   /* --- průběh runu --- */
   let heat = 0;
@@ -300,8 +319,12 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
     const zbrklost = Boolean(efekt.nejvyssiSila);
 
     let ruka = c.ruka.filter((k) => k.tag !== zakaz);
-    let zoufaleVolby =
-      c.zraneni >= rules.zoufalaOdZraneni ? zoufale.filter((k) => k.tag !== zakaz) : [];
+    let zoufaleVolby = [];
+    if (c.zraneni >= rules.zoufalaOdZraneni) {
+      const kandidati =
+        zoufalePolitika === 'dealt' ? (c.zoufalaVRuce ? [c.zoufalaVRuce] : []) : zoufalyPool;
+      zoufaleVolby = kandidati.filter((k) => k.tag !== zakaz);
+    }
     if (ruka.length === 0 && zoufaleVolby.length === 0) {
       // Zákaz nelze splnit — pravidlo nesmí hráče vyřadit ze hry (viz hlavička).
       ruka = c.ruka.slice();
@@ -616,6 +639,7 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
           ruka: c.ruka.map((k) => ({ ...k })),
           aktivniProkleta: c.aktivniProkleta ? { ...c.aktivniProkleta } : null,
           prokletychVeFronte: c.prokleteFronta.length,
+          zoufalaVRuce: c.zoufalaVRuce ? { ...c.zoufalaVRuce } : null,
           cil: c.cil ? { ...c.cil } : null,
         })),
         vysledek: result,
@@ -658,6 +682,10 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
       if (!volba.zoufala) {
         const idx = c.ruka.findIndex((k) => k.id === kartaId);
         c.ruka.splice(idx, 1);
+      } else if (zoufalePolitika === 'pool-once') {
+        zoufalyPool = zoufalyPool.filter((k) => k.id !== kartaId);
+      } else if (zoufalePolitika === 'dealt') {
+        c.zoufalaVRuce = null;
       }
       encounter.zahrane.set(postavaId, volba);
       log.append(EVENT.CARD_PLAYED, currentNodeIndex, {
