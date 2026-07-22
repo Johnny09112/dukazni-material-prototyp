@@ -303,7 +303,11 @@ describe('zoufalé karty', () => {
       ],
       uzly: syntetickeUzly({ afinity, tvrdost: 'zraneni' }),
     });
-    const events = drive(createRun({ seed: 43, content, rules: RULES, players: hraci(2) }), {
+    // Availability/penalty mechanics are easiest to assert under 'pool'
+    // (always available when eligible); the default policy is 'loot-injury'
+    // per D12 and is covered by the default-equivalence test below.
+    const poolRules = { ...RULES, zoufalePolitika: 'pool' };
+    const events = drive(createRun({ seed: 43, content, rules: poolRules, players: hraci(2) }), {
       probe: (s, run) => {
         for (const p of s.postavy.filter((x) => !x.vyrazena)) {
           const legal = run.getLegalPlays(p.id);
@@ -457,8 +461,8 @@ describe('politika zoufalých karet (rules.zoufalePolitika)', () => {
     expect(events.some((e) => e.type === 'card_played' && e.zoufala)).toBe(false);
   });
 
-  it('varianty nemění default: explicitní pool + buff 1 dává identický log jako RULES', () => {
-    const explicitni = { ...RULES, zoufalePolitika: 'pool', hlasZAutaBonus: 1 };
+  it('varianty nemění default: explicitní loot-injury + buff 1 dává identický log jako RULES', () => {
+    const explicitni = { ...RULES, zoufalePolitika: 'loot-injury', hlasZAutaBonus: 1 };
     const a = drive(createRun({ seed: 13, content: obsahSeZoufalymi(), rules: RULES, players: hraci(2) }));
     const b = drive(createRun({ seed: 13, content: obsahSeZoufalymi(), rules: explicitni, players: hraci(2) }));
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));

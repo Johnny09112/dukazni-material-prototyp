@@ -86,9 +86,11 @@ export const RULES = {
    *                   celkem ≥lootZoufalaOdZraneni, si lízne OSOBNÍ zoufalou
    *                   (max 1 v držení, jednorázová; hratelná od 3+ zranění).
    * - 'none'        … bez zoufalých karet (ablační baseline).
-   * DEFAULT zůstává 'pool', dokud nepadne designové rozhodnutí.
+   * DEFAULT: 'loot-injury' — rozhodnutí D12 (content/projekt/rozhodnuti.md,
+   * 2026-07-22): „zoufalství přichází s utrpením". 'pool' zamítnut měřením
+   * jako hlavní zdroj hry bez tření (greedy 88–98 % DORUČENO).
    */
-  zoufalePolitika: 'pool',
+  zoufalePolitika: 'loot-injury',
 
   /** Jen loot-injury: líznutí osobní zoufalé od tolika CELKOVÝCH zranění. */
   lootZoufalaOdZraneni: 2,

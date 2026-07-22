@@ -38,6 +38,10 @@ který je zde jako git submodule `content/`:
 - Po dokončení ucelené práce **commitni a pushni sám** (stejná konvence jako
   design repo). Nikdy necommituj rozbitý stav, `.env` ani klíče.
 - Windows prostředí; skripty spouštěj přes npm, ne přes bash-only nástroje.
+- **Kontrakt `{jmeno}` (fáze 2, UI/LLM vrstva):** do fallback šablon
+  (`content/prompty/fallback-sablony.yaml`) i promptů se dosazuje **příjmení**
+  postavy (poslední slovo pole `jmeno` z `content/obsah/postavy.yaml`) —
+  AI protokoly i fallbacky pak drží stejný registr („podezřelý Bartoš").
 
 ## Struktura a pořadí stavby
 
