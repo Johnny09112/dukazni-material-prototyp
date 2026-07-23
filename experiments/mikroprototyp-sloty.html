@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mikroprototyp: slotová resoluce</title>
+<style>
+  :root {
+    --papir: #f0e6d2; --inkoust: #3a3226; --slaba: #8a7c64;
+    --linka2: #c9bd9f; --razitko: #a02c2c; --ok: #4a6b3a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: #d8ccb4; color: var(--inkoust);
+    font-family: Georgia, 'Times New Roman', serif;
+  }
+  .list {
+    max-width: 900px; margin: 0 auto; background: var(--papir);
+    border: 1px solid var(--linka2); box-shadow: 0 2px 14px rgba(58,50,38,.25);
+    padding: 28px 32px; position: relative;
+  }
+  .list::before { content: ""; position: absolute; inset: 0 auto 0 14px; width: 2px; background: rgba(160,44,44,.35); }
+  h1 { font-size: 1.15rem; letter-spacing: .12em; text-transform: uppercase; margin: 0 0 2px; }
+  .sub { color: var(--slaba); font-size: .85rem; margin-bottom: 18px; }
+  .situace { border: 1px solid var(--linka2); padding: 12px 14px; margin-bottom: 18px; font-style: italic; }
+  h2 { font-size: .8rem; letter-spacing: .1em; text-transform: uppercase; color: var(--slaba); margin: 18px 0 8px; }
+  .sloty { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .slot {
+    border: 1px dashed var(--slaba); padding: 10px 12px; min-height: 84px; cursor: pointer;
+    background: rgba(255,255,255,.35);
+  }
+  .slot.vybrany { outline: 3px solid var(--razitko); }
+  .slot .otazka { font-weight: bold; font-size: .93rem; }
+  .slot .stat-hint { color: var(--slaba); font-size: .78rem; margin-top: 2px; }
+  .slot .obsazeno { margin-top: 6px; font-family: 'Courier New', monospace; font-size: .9rem; }
+  .ruka { display: flex; flex-wrap: wrap; gap: 8px; }
+  .slovo {
+    border: 1px solid var(--linka2); background: #fff; padding: 8px 10px; cursor: pointer;
+    font-size: .88rem; max-width: 200px;
+  }
+  .slovo.vybrane { outline: 3px solid var(--inkoust); }
+  .slovo.pouzite { opacity: .35; }
+  .slovo .nazev { font-weight: bold; }
+  .slovo .staty { font-family: 'Courier New', monospace; font-size: .75rem; color: var(--slaba); margin-top: 3px; }
+  .slovo .stitek { color: var(--razitko); font-size: .75rem; font-weight: bold; }
+  .slovo .pozn { font-size: .75rem; font-style: italic; color: var(--slaba); }
+  button {
+    font-family: inherit; font-size: .95rem; padding: 10px 22px; margin-top: 16px;
+    background: var(--inkoust); color: var(--papir); border: none; cursor: pointer; letter-spacing: .06em;
+  }
+  button:disabled { opacity: .4; cursor: default; }
+  button.vedlejsi { background: transparent; color: var(--inkoust); border: 1px solid var(--slaba); }
+  .odhaleni { margin-top: 18px; }
+  .radek-odhaleni {
+    display: flex; gap: 10px; align-items: baseline; padding: 7px 10px; margin-bottom: 6px;
+    font-size: .9rem; border-left: 4px solid var(--slaba); background: rgba(255,255,255,.4);
+  }
+  .radek-odhaleni.splnen { border-left-color: var(--ok); }
+  .radek-odhaleni.nesplnen { border-left-color: var(--razitko); }
+  .verdikt { font-weight: bold; text-transform: uppercase; font-size: .8rem; min-width: 84px; }
+  .splnen .verdikt { color: var(--ok); } .nesplnen .verdikt { color: var(--razitko); }
+  .protokol {
+    margin-top: 16px; padding: 14px 16px; border: 1px solid var(--linka2);
+    font-family: 'Courier New', monospace; font-size: .9rem; line-height: 1.5; background: #fbf7ee;
+  }
+  .razitko-vysledek {
+    display: inline-block; margin-top: 12px; padding: 8px 18px; border: 3px solid var(--razitko);
+    color: var(--razitko); font-weight: bold; letter-spacing: .18em; transform: rotate(-3deg);
+    text-transform: uppercase;
+  }
+  .razitko-vysledek.ok { border-color: var(--ok); color: var(--ok); }
+  .napoveda { color: var(--slaba); font-size: .82rem; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="list">
+  <h1>Mikroprototyp — slotová resoluce (sonda, mimo hru)</h1>
+  <div class="sub">Ověřuje pocit: přiřazování slov do slotů, skryté prahy odhalené po vyhodnocení, žádná kostka.</div>
+
+  <div class="situace">
+    <strong>Kontrola na silnici.</strong> Šerif okresu Cattaraugus vám mávl na krajnici.
+    Obchází vůz, poklepává na plachtu a evidentně má čas. „Kampak, hoši? A copak to vezete,
+    že to tak… šplouchá?" Blíží se k nákladovému prostoru.
+  </div>
+
+  <h2>1) Vyber slovo (klik), pak slot (klik). Čtyři sloty, osm slov — čtyři zbydou.</h2>
+  <div class="sloty" id="sloty"></div>
+
+  <h2>Slova v ruce</h2>
+  <div class="ruka" id="ruka"></div>
+
+  <button id="vyhodnotit" disabled>Vyhodnotit situaci</button>
+  <button id="znovu" class="vedlejsi">Nová várka slov</button>
+  <div class="napoveda">Prahy slotů jsou skryté — telegrafuje je jen text situace a otázek. Odhalí se po vyhodnocení.</div>
+
+  <div id="vysledek"></div>
+</div>
+
+<script>
+// ------- data (staty ručně, žádná AI; slouží jen k osahání pocitu) -------
+// staty: U útok, O obrana, H hodnota, I improvizace (v návrhu „náhoda"), N nástroj
+const SLOVA = [
+  { id:'vyvar',      nazev:'Hovězí vývar',          U:0,O:0,H:1,I:3,N:1, pozn:'vůně na půl míle' },
+  { id:'spuntovka',  nazev:'Špuntovka',             U:2,O:1,H:1,I:1,N:1, pozn:'na jarmareční kachny' },
+  { id:'preclíky',   nazev:'Preclíky',              U:1,O:0,H:1,I:2,N:0, pozn:'týden staré' },
+  { id:'prezervativ',nazev:'Prezervativ',           U:0,O:1,H:1,I:4,N:2, pozn:'vodotěsný' },
+  { id:'pistole',    nazev:'Pistole',               U:5,O:3,H:3,I:0,N:2, stitek:'GANGSTER', pozn:'když ji šerif uvidí, je zle' },
+  { id:'banan',      nazev:'Banánový kanón',        U:1,O:0,H:2,I:5,N:1, pozn:'nikdo neví, co to je — a to je jeho síla' },
+  { id:'hodinky',    nazev:'Zlaté kapesní hodinky', U:0,O:0,H:5,I:1,N:1, pozn:'po tchánovi' },
+  { id:'paratka',    nazev:'Bambusová párátka',     U:1,O:0,H:0,I:2,N:3, pozn:'tucet za cent' },
+  { id:'ubrousek',   nazev:'Kouzelný ubrousek',     U:0,O:1,H:1,I:4,N:2, pozn:'zmizí s ním leccos' },
+  { id:'slanina',    nazev:'Plátek slaniny',        U:0,O:0,H:3,I:2,N:0, pozn:'argument pro šerifova psa' },
+  { id:'brokovnice', nazev:'Dědečkova brokovnice',  U:4,O:2,H:2,I:1,N:1, stitek:'GANGSTER', pozn:'rez jí na věcnosti neubírá' },
+  { id:'zitna',      nazev:'Láhev kanadské žitné',  U:1,O:0,H:4,I:1,N:0, pozn:'důkaz i platidlo zároveň' },
+];
+
+// Sloty: otázka + viditelný stat + SKRYTÝ práh (funkce). „Gangster" ve slotech 1–3
+// selže vždy (šerif zbraň vidí) — speciální efekt štítku.
+const SLOTY = [
+  { id:'odlakani', otazka:'Čím odlákáš šerifovu pozornost od plachty?', stat:'improvizace',
+    tajemstvi:'improvizace ≥ 2', test:(s)=> s.I>=2, vysvetleni:(s)=>`improvizace ${s.I}, potřeba ≥ 2` },
+  { id:'vsimne', otazka:'Co mu vtiskneš do dlaně jako všimné?', stat:'hodnota',
+    tajemstvi:'hodnota ≥ 3', test:(s)=> s.H>=3, vysvetleni:(s)=>`hodnota ${s.H}, potřeba ≥ 3` },
+  { id:'kapsa', otazka:'Co ti „náhodou" vypadne z kapsy, když se hrabeš pro doklady?', stat:'musí působit nevinně',
+    tajemstvi:'hodnota ≤ 1 a útok ≤ 1 (nevinnost)', test:(s)=> s.H<=1 && s.U<=1,
+    vysvetleni:(s)=>`hodnota ${s.H} a útok ${s.U}, potřeba obojí ≤ 1 — nevinné to být nesmělo cenné ani nebezpečné` },
+  { id:'vyhrurka', otazka:'Čím pohrozíš, kdyby přituhlo? (zůstane v záloze)', stat:'útok',
+    tajemstvi:'útok ≥ 4', test:(s)=> s.U>=4, vysvetleni:(s)=>`útok ${s.U}, potřeba ≥ 4` },
+];
+const VIDITELNE_SLOTY_PRO_GANGSTERA = ['odlakani','vsimne','kapsa'];
+
+// ------- stav -------
+let ruka = [], prirazeni = {}, vybraneSlovo = null;
+
+function rozdej() {
+  const balik = [...SLOVA];
+  ruka = [];
+  for (let i=0;i<8;i++) ruka.push(balik.splice(Math.floor(Math.random()*balik.length),1)[0]);
+  prirazeni = {}; vybraneSlovo = null;
+  document.getElementById('vysledek').innerHTML = '';
+  render();
+}
+
+function render() {
+  const elSloty = document.getElementById('sloty');
+  elSloty.innerHTML = '';
+  for (const slot of SLOTY) {
+    const d = document.createElement('div');
+    d.className = 'slot';
+    const obsazeno = prirazeni[slot.id];
+    d.innerHTML = `<div class="otazka">${slot.otazka}</div>
+      <div class="stat-hint">počítá se: ${slot.stat} · práh skrytý</div>
+      <div class="obsazeno">${obsazeno ? '→ ' + obsazeno.nazev + ' <small>(klik = vrátit)</small>' : '— prázdné —'}</div>`;
+    d.onclick = () => {
+      if (prirazeni[slot.id]) { delete prirazeni[slot.id]; }
+      else if (vybraneSlovo) { prirazeni[slot.id] = vybraneSlovo; vybraneSlovo = null; }
+      render();
+    };
+    elSloty.appendChild(d);
+  }
+  const elRuka = document.getElementById('ruka');
+  elRuka.innerHTML = '';
+  const pouzita = new Set(Object.values(prirazeni).map(s=>s.id));
+  for (const s of ruka) {
+    const d = document.createElement('div');
+    d.className = 'slovo' + (vybraneSlovo===s?' vybrane':'') + (pouzita.has(s.id)?' pouzite':'');
+    d.innerHTML = `<div class="nazev">${s.nazev} ${s.stitek?`<span class="stitek">⚠ ${s.stitek}</span>`:''}</div>
+      <div class="staty">útok ${s.U} · obrana ${s.O} · hodnota ${s.H} · improvizace ${s.I} · nástroj ${s.N}</div>
+      <div class="pozn">${s.pozn}</div>`;
+    d.onclick = () => { if (!pouzita.has(s.id)) { vybraneSlovo = (vybraneSlovo===s?null:s); render(); } };
+    elRuka.appendChild(d);
+  }
+  document.getElementById('vyhodnotit').disabled = Object.keys(prirazeni).length !== SLOTY.length;
+}
+
+function vyhodnot() {
+  const radky = [];
+  let splneno = 0;
+  for (const slot of SLOTY) {
+    const slovo = prirazeni[slot.id];
+    const gangsterProblem = slovo.stitek==='GANGSTER' && VIDITELNE_SLOTY_PRO_GANGSTERA.includes(slot.id);
+    const ok = !gangsterProblem && slot.test(slovo);
+    if (ok) splneno++;
+    const proc = gangsterProblem
+      ? `⚠ GANGSTER: zbraň ve viditelné akci — šerif ji uviděl, slot selhal bez ohledu na staty`
+      : slot.vysvetleni(slovo);
+    radky.push({ slot, slovo, ok, proc });
+  }
+  const vysledek = splneno===4 ? 'HLADCE' : (splneno>=2 ? 'S NÁSLEDKY' : 'PRŮŠVIH');
+  const w = (id)=>prirazeni[id].nazev.toLowerCase();
+  const protokoly = {
+    'HLADCE': `Šerif byl na místě zdržen předmětem, který hlášení vede jako „${w('odlakani')}". Do dlaně mu vklouzlo ${w('vsimne')}; z kapsy podezřelého vypadlo pouze ${w('kapsa')}, což šerif uznal za nevinné. K výhrůžce (${w('vyhrurka')}) nedošlo, zůstala v záloze. Vůz pokračoval. Šerif do protokolu uvedl, že „bylo vše v pořádku", a okres mu to kupodivu věří.`,
+    'S NÁSLEDKY': `Kontrola proběhla, řekněme, částečně. Něco z připraveného sehrálo svou roli, něco selhalo — podrobnosti v rozpisu výše. Šerif vůz nakonec propustil, ale něco si zapsal, něco si nechal a na něco si vzpomene. Podezřelí pokračují s následky.`,
+    'PRŮŠVIH': `Pokus o zvládnutí kontroly se nezdařil v míře, kterou tento okrsek dlouho neviděl. Šerif viděl víc, než měl, dostal míň, než čekal, a z kapsy podezřelého vypadlo něco, co se v hlášení cituje doslova. Následuje eskalace situace; podezřelí si polepšili pouze v kolonce „zvláštní znamení".`,
+  };
+  const el = document.getElementById('vysledek');
+  el.innerHTML = `<h2>Odhalení prahů — proč to dopadlo, jak to dopadlo</h2>
+    <div class="odhaleni">${radky.map(r=>`
+      <div class="radek-odhaleni ${r.ok?'splnen':'nesplnen'}">
+        <span class="verdikt">${r.ok?'✓ splněno':'✗ selhalo'}</span>
+        <span><strong>${r.slovo.nazev}</strong> — ${r.slot.otazka}<br>
+        <small>skrytý práh: ${r.slot.tajemstvi} · tvoje karta: ${r.proc}</small></span>
+      </div>`).join('')}
+    </div>
+    <div class="razitko-vysledek ${splneno===4?'ok':''}">${vysledek} (${splneno}/4 slotů)</div>
+    <div class="protokol">${protokoly[vysledek]}</div>
+    <div class="napoveda">Tohle je šablonový text — ve hře by ho z přiřazení a výsledků dramatizovala AI (staty by ale rozhodly vždy předem, jako teď).</div>`;
+}
+
+document.getElementById('vyhodnotit').onclick = vyhodnot;
+document.getElementById('znovu').onclick = rozdej;
+rozdej();
+</script>
+</body>
+</html>
