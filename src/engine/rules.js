@@ -1,142 +1,139 @@
 // @ts-check
 /**
- * Resoluční pravidla jako data (ADR-003).
+ * Resoluční pravidla v3 jako data (ADR-003).
  *
- * Jediné místo v kódu, kde smí žít resoluční čísla. Hodnoty se přebírají
- * z `content/prototyp-mvp.md` (§ Resoluční systém, stav po kalibraci D7–D11,
- * 2026-07-22). Konstanta resolučního systému kdekoli jinde = chyba.
+ * Jediné místo v kódu, kde smí žít resoluční ČÍSLA. Hodnoty se přebírají
+ * z `content/prototyp-mvp.md` (§ Resoluční systém v3). Konstanta resolučního
+ * systému kdekoli jinde = chyba. **Všechna čísla jsou „ladit simulací"** —
+ * v3 simulační brána je otevřená a pásmo K1 se fixuje až po diagnostickém
+ * run-1 (Fáze 0). Simulátor umí pustit tutéž dávku proti více variantám
+ * tohoto objektu (ADR-003) — kalibrace bez forku kódu.
  *
- * Simulátor umí pustit tutéž dávku proti více variantám tohoto objektu
- * (architektura.md ADR-003).
+ * Pozn.: MECHANIKY (chování štítku, efekt postihu, rušení pronásledovatele)
+ * NEjsou zde — jsou strojově v obsahu (stitky/postihy/pronasledovatele.yaml)
+ * a engine implementuje uzavřený enum. Zde jen tuning.
  */
 
 export const RULES = {
   /** Verze pravidel — jde do události run_started. */
-  verze: 'v0.1 / prototyp-mvp.md 2026-07-22 (po D7–D11)',
+  verze: 'v0.3 / prototyp-mvp.md 2026-07-23 (slotová resoluce v3; výchozí čísla — ladit simulací)',
 
-  /** Hod: d6 + síla + afinita − min(zranění, maxPostihZraneni). */
-  kostka: 6,
+  /** Pět statů věci, pořadí kanonické (obsah/veci.yaml). */
+  staty: /** @type {const} */ (['utok', 'obrana', 'hodnota', 'improvizace', 'nastroj']),
+  statMin: 0,
+  statMax: 5,
+
+  /** Situace má přesně 4 sloty; tým committne přesně 4 karty. */
+  slotu: 4,
+
+  /** Skryté prahy: kotva 2–4 (práh 0 zakázán) + šum uniform v {−1,0,+1}. */
+  kotvaMin: 2,
+  kotvaMax: 4,
+  sumRozsah: 1,
 
   /**
-   * Pásma výsledku (prototyp-mvp.md: 7+ úspěch / 5–6 úspěch za cenu /
-   * ≤4 selhání; práh snížen z 8+ na 7+ po 2. běhu simulace).
+   * Ruce a rozdělení commitu dle počtu hráčů — JEDINÁ páka na vyrovnání agency
+   * (prototyp-mvp.md §Ruce). `commit` je rozdělení 4 committnutých karet mezi
+   * hráče (u 3p prvních `2` committne držitel mapy — role rotuje po uzlu).
    */
-  prahUspechu: 7,
-  prahUspechuZaCenu: 5,
-
-  /** Postih za zranění: −počet zranění, max −3. */
-  maxPostihZraneni: 3,
-
-  /** Ruka 5 karet, po každém uzlu doliz na 5. */
-  velikostRuky: 5,
-
-  /** Tým veze 6 beden; 0 beden = NEVYŘEŠENO. */
-  bedenNaStartu: 6,
-
-  /** Run = 6 uzlů; volba vždy ze 2 nabízených cest. */
-  uzluNaRun: 6,
-  nabidkaCest: 2,
-
-  /** Tvrdost uzlu při selhání: bedna −1 / zar +2 per selhání / zraneni = druhé zranění. */
-  tvrdostBednaZtrata: 1,
-  tvrdostZarPrirustek: 2,
-  tvrdostZraneniNavic: 1,
-
-  zar: {
-    max: 10,
-    /** +1 za uzel s aspoň jedním selháním (max 1× za uzel). */
-    zaUzelSeSelhanim: 1,
-    /** +1 za každou zahranou hlučnou kartu (per karta). */
-    zaHlucnouKartu: 1,
-    /**
-     * Hook „+2 za vybrané výsledky uzlů" (prototyp-mvp.md). Obsah v0.1 žádný
-     * takový flag u uzlů nemá, takže se hodnota v běhu NIKDY nepoužije —
-     * hook existuje, aby budoucí flag v obsahu nevyžadoval zásah do resoluce.
-     */
-    zaVybranyVysledekUzlu: 2,
-    /** Prahy Žáru: 5 = Zátah nahradí OBĚ cesty, 7 = léčka, 10 = konfrontace. */
-    prahy: { zatah: 5, lecka: 7, konfrontace: 10 },
-    /** Přežití konfrontace → Žár klesá na 3 (finále se nesmí recyklovat). */
-    poPrezitiKonfrontace: 3,
+  ruce: {
+    1: { ruka: 6, commit: [4] },
+    2: { ruka: 4, commit: [2, 2] },
+    3: { ruka: 4, commit: [2, 1, 1] },
+    4: { ruka: 3, commit: [1, 1, 1, 1] },
   },
 
-  /** 4. zranění = kolaps postavy (vyřazena, dál jen „hlas z auta"). */
-  kolapsPriZraneni: 4,
-
-  /** Od 2. zranění dál: každé zranění = líznutí prokleté karty. */
-  prokletaOdZraneni: 2,
-
-  /** Zoufalé karty hratelné jen s 3+ zraněními; ignorují postih za zranění. */
-  zoufalaOdZraneni: 3,
+  /** Páteř runu ~7 uzlů; tým veze bedny, 0 = konec (NEVYŘEŠENO). */
+  uzluNaRun: 7,
+  bedenNaStartu: 6,
 
   /**
-   * Politika dostupnosti zoufalých karet (kalibrační osa po 1. měření enginu
-   * 2026-07-22 — zoufalé jako stálý pool zvedají greedy na ~97 % DORUČENO):
-   * - 'pool'        … současný stav dle sim-model-assumptions: stálý sdílený
-   *                   pool, kdokoli s 3+ zraněními hraje kdykoli kteroukoli.
-   * - 'pool-once'   … sdílený pool, každá karta jde zahrát jen JEDNOU za run.
-   * - 'dealt'       … každý hráč dostane na startu 1 náhodnou zoufalou
-   *                   (bez opakování), hratelná od 3+ zranění, jednorázová.
-   * - 'loot-node'   … návrh uživatele 2026-07-22 (loot systém v design docích
-   *                   neexistuje — měřeno před rozhodnutím): po každém
-   *                   DOKONČENÉM uzlu (běžný slot vč. Zátahu; léčka/konfrontace
-   *                   ne) tým lízne 1 zoufalou ze zásoby 4 do sdíleného poolu —
-   *                   dostupnost náběhem, každá jednorázová.
-   * - 'loot-injury' … po setkání, v němž postava utrpěla ≥1 zranění a má
-   *                   celkem ≥lootZoufalaOdZraneni, si lízne OSOBNÍ zoufalou
-   *                   (max 1 v držení, jednorázová; hratelná od 3+ zranění).
-   * - 'none'        … bez zoufalých karet (ablační baseline).
-   * DEFAULT: 'loot-injury' — rozhodnutí D12 (content/projekt/rozhodnuti.md,
-   * 2026-07-22): „zoufalství přichází s utrpením". 'pool' zamítnut měřením
-   * jako hlavní zdroj hry bez tření (greedy 88–98 % DORUČENO).
+   * Mapa (StS páteř): truhla je pevný krok (nejde vyroutovat kolem masa),
+   * motel je binární odbočka nabídnutá před danými kroky (mid + late).
+   * Ostatní kroky jsou maso (npc/lokace). Ladit simulací.
    */
-  zoufalePolitika: 'loot-injury',
+  map: {
+    truhlaKrok: 3,
+    motelKroky: [4, 6],
+  },
 
-  /** Jen loot-injury: líznutí osobní zoufalé od tolika CELKOVÝCH zranění. */
-  lootZoufalaOdZraneni: 2,
+  /** PRŮŠVIH (≤1/4) bere náklad. */
+  nakladPrusvihZtrata: 1,
+
+  /** Postihy — cap a eskalace; tiery + efekty nese obsah/postihy.yaml. */
+  postihy: {
+    /** Cap aktivních postihů na hráče; 3. postih → „složení". */
+    capNaHrace: 2,
+    /** Složená postava leží kolo–dvě (RNG v rozsahu), pak se vrací. */
+    slozeniKolMin: 1,
+    slozeniKolMax: 2,
+  },
+
+  /** Kreditová ekonomika (společné, per-run; ceny/příjmy — mista.yaml je nese taky). */
+  kredity: {
+    startovni: 0,
+    /** Příjmy dle pásma. */
+    zaHladceLoot: 2, // 4/4
+    zaHladce: 1, // 3/4
+    /** Ceny v motelu (zrcadlí obsah/mista.yaml `sluzby`). */
+    smenaKarty: 3,
+    leceniTezkeho: 6,
+  },
+
+  /** Gamble — záchrana po odhalení, 1× za situaci. */
+  gamble: {
+    naSituaci: 1,
+  },
 
   /**
-   * Hlas z auta: vyřazený hráč dá spoluhráči +hlasZAutaBonus k hodu, NEBO mu
-   * lízne prokletou. Kalibrační osa: hodnota 0 = větev bonusu je mechanicky
-   * prázdná („nic") — příkaz zůstává platný, jen bez efektu; prokletá větev
-   * se nemění. (Čistší než větev rušit: tok API i UI zůstává stejný.)
+   * Žár (0–10): týmová stopa pozornosti, pozice na trati (křížkující šerif).
+   * Roste za PRŮŠVIH, hlučné hraní (GANGSTER, vysoký útok) a vybrané výsledky.
+   * Každý pohyb nese anotaci `duvod` (POVINNÁ, viz events.ZAR_DUVOD).
    */
-  hlasZAutaBonus: 1,
-
-  /** Prokletá „Ztráta důstojnosti": selže-li tým v uzlu, +1 Žár navíc (celkem +2). */
-  ztrataDustojnostiZarNavic: 1,
+  zar: {
+    max: 10,
+    /** +N za PRŮŠVIH pásmo. */
+    zaPrusvih: 2,
+    /** +N za S_NÁSLEDKY pásmo (mírný tlak). */
+    zaSNasledky: 1,
+    /** +N za každou GANGSTER věc ve slotu (Brody run-wide ZDVOJNÁSOBUJE — obsah). */
+    zaGangster: 1,
+    /** Non-GANGSTER věc se statem útok ≥ prahem přiřazená do slotu = hlučná. */
+    hlucnyUtokPrah: 4,
+    zaHlucnyUtok: 1,
+    /** Prahy na trati: Zátah (nahradí příští uzel), léčka (vložený uzel),
+     *  konfrontace (finále; přežití srazí Žár). */
+    prahy: { zatah: 4, lecka: 7, konfrontace: 10 },
+    /** Přežití konfrontace → Žár klesá na tuto hodnotu (prahy se znovu nabijí). */
+    poPrezitiKonfrontace: 3,
+  },
 };
 
 /**
- * Mechanické efekty prokletých karet (typ `prokleta` v obsah/karty.yaml).
- *
- * Obsahové YAML nese jen text karty (schéma efektová pole nemá); mechanika
- * textů je zafixovaná zde a loader validuje, že každá prokletá karta v obsahu
- * má známý efekt. Priorita: zákaz tagu má přednost před vynucením (Zbrklost).
- *
- * @type {Record<string, {zakazTag?: string, modHodu?: number, hlucna?: boolean,
- *   zarNavicPriSelhaniUzlu?: number, nejvyssiSila?: boolean}>}
+ * Uzavřený enum efektů postihů, které engine IMPLEMENTUJE (D19, ADR-008).
+ * Loader validuje, že obsah/postihy.yaml `efekt.druh` je z této sady;
+ * engine je k parametrům agnostický až na tyto známé druhy.
+ * @type {readonly string[]}
  */
-export const CURSED_EFFECTS = {
-  krec: { zakazTag: 'nasili' },
-  'roztresene-ruce': { zakazTag: 'lest' },
-  'prazdne-kapsy': { zakazTag: 'uplatek' },
-  'podvrtnuty-kotnik': { zakazTag: 'utek' },
-  kocovina: { modHodu: -2 },
-  'ztrata-dustojnosti': { zarNavicPriSelhaniUzlu: RULES.ztrataDustojnostiZarNavic },
-  'nutkani-ochutnat': { modHodu: -2, hlucna: true },
-  zbrklost: { nejvyssiSila: true },
-};
+export const POSTIH_EFEKTY = /** @type {const} */ ([
+  // informační
+  'hide_staty',
+  'hide_telegraf',
+  'hide_viditelnost',
+  // zámkové
+  'lock_stitek',
+  'lock_slot_viditelnost',
+  'lock_gamble',
+  // ztrátové
+  'ztrata_kreditu',
+  'ztrata_karty',
+  'ztrata_naklad',
+  'ruka_minus',
+]);
 
 /**
- * Mechanika pronásledovatelů (obsah/pronasledovatele.yaml, pole `pravidlo`).
- *
- * - Malone: karty Úplatek mají sílu 0 na JEHO uzlech (Zátah, léčka, konfrontace).
- * - Brody: každá hlučná karta +2 Žár místo +1 (globálně, na všech uzlech).
- *
- * @type {Record<string, {silaNulaTagNaJehoUzlech?: string, zarZaHlucnou?: number}>}
+ * Chování GANGSTER štítku per typ situace, které engine implementuje
+ * (obsah/stitky.yaml `chovani_dle_typu`). Uzavřený enum hodnot.
+ * @type {readonly string[]}
  */
-export const PURSUER_EFFECTS = {
-  'agent-malone': { silaNulaTagNaJehoUzlech: 'uplatek' },
-  'serif-brody': { zarZaHlucnou: 2 },
-};
+export const STITEK_CHOVANI = /** @type {const} */ (['viditelna_role_selze', 'vzdy_pass']);

@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Validace obsahu: reálné content/obsah/*.yaml musí projít schématy
+ * v3 validace obsahu: reálné content/obsah/*.yaml musí projít v3 schématy
  * (rozbitý YAML od content-generatora spadne v testu, ne za běhu hry) +
  * negativní případy s konkrétními českými hláškami.
  */
@@ -16,71 +16,82 @@ const obsahDir = path.join(__dirname, '..', 'content', 'obsah');
 export function loadRealYaml() {
   const precti = (soubor) => fs.readFileSync(path.join(obsahDir, soubor), 'utf8');
   return {
-    karty: precti('karty.yaml'),
-    uzly: precti('uzly.yaml'),
-    cile: precti('cile.yaml'),
+    veci: precti('veci.yaml'),
+    situace: precti('situace.yaml'),
+    postihy: precti('postihy.yaml'),
+    mista: precti('mista.yaml'),
+    stitky: precti('stitky.yaml'),
     pronasledovatele: precti('pronasledovatele.yaml'),
+    cile: precti('cile.yaml'),
+    postavy: precti('postavy.yaml'),
   };
 }
 
-describe('reálný obsah z content/obsah/', () => {
+describe('reálný v3 obsah z content/obsah/', () => {
   it('projde validací a odpovídá cílovým počtům MVP', () => {
     const content = parseContent(loadRealYaml());
-    expect(content.karty.filter((k) => k.typ === 'zakladni')).toHaveLength(32);
-    expect(content.karty.filter((k) => k.typ === 'prokleta')).toHaveLength(8);
-    expect(content.karty.filter((k) => k.typ === 'zoufala')).toHaveLength(4);
-    expect(content.uzly.filter((u) => !u.specialni)).toHaveLength(14);
-    expect(content.uzly.filter((u) => u.specialni === 'zatah')).toHaveLength(1);
-    expect(content.cile).toHaveLength(8);
+    expect(content.veci.length).toBeGreaterThanOrEqual(38); // ~40
+    expect(content.situace.filter((s) => s.typ === 'npc' || s.typ === 'lokace').length).toBeGreaterThanOrEqual(10);
+    expect(content.situace.filter((s) => s.typ === 'zatah')).toHaveLength(1);
+    expect(content.postihy.length).toBeGreaterThanOrEqual(12);
+    expect(content.stitky.some((s) => s.id === 'GANGSTER')).toBe(true);
+    expect(content.mista.filter((m) => m.typ === 'truhla').length).toBeGreaterThanOrEqual(1);
+    expect(content.mista.filter((m) => m.typ === 'motel').length).toBeGreaterThanOrEqual(1);
     expect(content.pronasledovatele).toHaveLength(2);
+    expect(content.cile).toHaveLength(8);
+    expect(content.postavy).toHaveLength(4);
     expect(content.verze).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it('každá situace i mini-uzel pronásledovatele má přesně 4 sloty', () => {
+    const content = parseContent(loadRealYaml());
+    for (const s of content.situace) expect(s.sloty).toHaveLength(4);
+    for (const p of content.pronasledovatele) {
+      expect(p.lecka.sloty).toHaveLength(4);
+      expect(p.konfrontace.sloty).toHaveLength(4);
+    }
   });
 });
 
-describe('validační chyby (česky, se souborem a id)', () => {
+describe('v3 validační chyby (česky, se souborem a id)', () => {
   const zaklad = loadRealYaml();
 
   it('rozbité YAML', () => {
-    expect(() => parseContent({ ...zaklad, karty: 'karty:\n  - id: [rozbite' })).toThrow(/karty\.yaml.*YAML/s);
+    expect(() => parseContent({ ...zaklad, veci: 'veci:\n  - id: [rozbite' })).toThrow(/veci\.yaml.*YAML/s);
   });
-  it('neplatná síla základní karty', () => {
-    const karty = 'karty:\n  - id: spatna-karta\n    nazev: Špatná\n    typ: zakladni\n    tag: lest\n    sila: 5\n    text: "x"\n';
-    expect(() => parseContent({ ...zaklad, karty })).toThrow(/spatna-karta.*síla musí být 1–3/s);
+
+  it('neplatný stat věci (mimo 0–5)', () => {
+    const veci = 'veci:\n  - id: spatna-vec\n    nazev: Špatná\n    staty: { utok: 9, obrana: 0, hodnota: 0, improvizace: 0, nastroj: 0 }\n    text: "x"\n';
+    expect(() => parseContent({ ...zaklad, veci })).toThrow(/spatna-vec.*stat utok = 9/s);
   });
-  it('prokletá karta bez známého efektu v enginu', () => {
-    const karty = 'karty:\n  - id: nova-prokleta\n    nazev: Nová\n    typ: prokleta\n    tag:\n    sila: 0\n    text: "x"\n';
-    expect(() => parseContent({ ...zaklad, karty })).toThrow(/nova-prokleta.*nezná mechanický efekt/s);
+
+  it('neznámý štítek u věci', () => {
+    const veci = 'veci:\n  - id: vec-stitek\n    nazev: X\n    staty: { utok: 1, obrana: 1, hodnota: 1, improvizace: 1, nastroj: 1 }\n    stitek: NEEXISTUJE\n    text: "x"\n';
+    expect(() => parseContent({ ...zaklad, veci })).toThrow(/vec-stitek.*neznámý štítek/s);
   });
-  it('uzel s neplatnou tvrdostí a afinitou', () => {
-    const uzly =
-      'uzly:\n  - id: spatny-uzel\n    nazev: X\n    uvod: "x"\n    afinity: {nasili: 1, lest: 0, uplatek: 2}\n    tvrdost: pokuta\n  - id: druhy\n    nazev: Y\n    uvod: "y"\n    afinity: {nasili: 0, lest: 0, uplatek: 0, utek: 0}\n    tvrdost: zar\n  - id: zatah-x\n    nazev: Zátah\n    uvod: "z"\n    afinity: {nasili: 0, lest: 0, uplatek: 0, utek: 0}\n    tvrdost: zar\n    specialni: zatah\n';
-    expect(() => parseContent({ ...zaklad, uzly })).toThrow(/spatny-uzel/);
-    expect(() => parseContent({ ...zaklad, uzly })).toThrow(/tvrdost „pokuta"/);
-    expect(() => parseContent({ ...zaklad, uzly })).toThrow(/postrádají tag „utek"/);
+
+  it('situace se špatnou kotvou', () => {
+    const situace = 'situace:\n  - id: spatna-situace\n    typ: npc\n    telegraf: "x"\n    text: "{VEC} {VEC} {VEC} {VEC}"\n    sloty:\n      - { role: a, stat: utok, kotva: 0, viditelnost: viditelna }\n      - { role: b, stat: obrana, kotva: 3, viditelnost: viditelna }\n      - { role: c, stat: hodnota, kotva: 3, viditelnost: viditelna }\n      - { role: d, stat: nastroj, kotva: 3, viditelnost: skryta }\n    pasmove_vysledky:\n      s_nasledky: { postih_lehky: [drobna-pokuta] }\n      prusvih: { postih_tezky: [zlomene-zebro] }\n';
+    expect(() => parseContent({ ...zaklad, situace })).toThrow(/kotva musí být 2–4/);
   });
-  it('chybějící Zátah-uzel', () => {
-    const uzly =
-      'uzly:\n  - id: jeden\n    nazev: X\n    uvod: "x"\n    afinity: {nasili: 0, lest: 0, uplatek: 0, utek: 0}\n    tvrdost: zar\n  - id: dva\n    nazev: Y\n    uvod: "y"\n    afinity: {nasili: 0, lest: 0, uplatek: 0, utek: 0}\n    tvrdost: bedna\n';
-    expect(() => parseContent({ ...zaklad, uzly })).toThrow(/přesně 1 speciální Zátah-uzel/);
+
+  it('postih s neznámým efektem v enginu', () => {
+    const postihy = 'postihy:\n  - id: novy-postih\n    nazev: Nový\n    typ: informacni\n    tier: lehky\n    trvani: 2\n    efekt: { druh: teleportace }\n    text: "x"\n';
+    expect(() => parseContent({ ...zaklad, postihy })).toThrow(/novy-postih.*nezná efekt/s);
   });
+
   it('mechanický cíl s neparsovatelnou podmínkou', () => {
-    const cile =
-      'cile:\n  - id: spatny-cil\n    text: "x"\n    overeni: "x"\n    overeni_typ: mechanicky\n    podminka: "pocet_hodu >= 1"\n    body: 2\n';
+    const cile = 'cile:\n  - id: spatny-cil\n    text: "x"\n    overeni: "x"\n    overeni_typ: mechanicky\n    podminka: "pocet_hodu >= 1"\n    body: 2\n';
     expect(() => parseContent({ ...zaklad, cile })).toThrow(/spatny-cil.*neznámá metrika/s);
   });
-  it('textový cíl s podmínkou je chyba', () => {
-    const cile =
-      'cile:\n  - id: spatny-textovy\n    text: "x"\n    overeni: "x"\n    overeni_typ: textovy\n    podminka: "doruceno"\n    body: 2\n';
-    expect(() => parseContent({ ...zaklad, cile })).toThrow(/spatny-textovy.*nesmí mít pole podminka/s);
+
+  it('situace odkazuje na neexistující postih', () => {
+    const situace = 'situace:\n  - id: bad-postih\n    typ: npc\n    telegraf: "x"\n    text: "{VEC} {VEC} {VEC} {VEC}"\n    sloty:\n      - { role: a, stat: utok, kotva: 3, viditelnost: viditelna }\n      - { role: b, stat: obrana, kotva: 3, viditelnost: viditelna }\n      - { role: c, stat: hodnota, kotva: 3, viditelnost: viditelna }\n      - { role: d, stat: nastroj, kotva: 3, viditelnost: skryta }\n    pasmove_vysledky:\n      s_nasledky: { postih_lehky: [neexistujici-postih] }\n      prusvih: { postih_tezky: [zlomene-zebro] }\n';
+    expect(() => parseContent({ ...zaklad, situace })).toThrow(/neznámý lehký postih/);
   });
-  it('léčka pronásledovatele musí mít tvrdost zar', () => {
-    const pronasledovatele =
-      'pronasledovatele:\n  - id: agent-malone\n    nazev: Malone\n    ruseny_tag: uplatek\n    pravidlo: "x"\n    flavor: "x"\n    lecka:\n      uvod: "x"\n      afinity: {nasili: 0, lest: 0, uplatek: 0, utek: 0}\n      tvrdost: bedna\n    konfrontace:\n      uvod: "x"\n      afinity: {nasili: 0, lest: 0, uplatek: 0, utek: 0}\n      tvrdost: zraneni\n';
-    expect(() => parseContent({ ...zaklad, pronasledovatele })).toThrow(/lecka musí být „zar"/);
-  });
+
   it('duplicitní id napříč soubory', () => {
-    const cile =
-      'cile:\n  - id: zatah\n    text: "x"\n    overeni: "x"\n    overeni_typ: mechanicky\n    podminka: "doruceno"\n    body: 1\n';
-    expect(() => parseContent({ ...zaklad, cile })).toThrow(/id „zatah" není unikátní/);
+    const cile = 'cile:\n  - id: GANGSTER\n    text: "x"\n    overeni: "x"\n    overeni_typ: mechanicky\n    podminka: "doruceno"\n    body: 1\n';
+    expect(() => parseContent({ ...zaklad, cile })).toThrow(/id „GANGSTER" není unikátní/);
   });
 });

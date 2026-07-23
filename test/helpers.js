@@ -1,133 +1,158 @@
 // @ts-check
 /**
- * Sdílení pro testy: syntetický obsah s řízenými zárukami (garantovaná
- * selhání, čistá hlučnost…) a deterministický driver runu s možností sond.
+ * Sdílení pro v3 testy: syntetický slotový obsah s řízenými zárukami
+ * a deterministický driver runu, který projede všechny fáze
+ * (map → commit → assign → confirm → …).
  */
 
-/** @param {number} pocet @param {object} sablona */
-export function syntetickeKarty(pocet, sablona) {
-  return Array.from({ length: pocet }, (_, i) => ({
-    id: `${sablona.tag ?? 'karta'}-${sablona.sila ?? 1}-${i}`,
-    nazev: 'Testovka',
-    typ: 'zakladni',
-    sila: 1,
-    text: 'test',
-    ...sablona,
-    ...(sablona.id ? { id: `${sablona.id}-${i}` } : {}),
-  }));
+/** Věc s pěti staty (default 0). */
+export function vec(id, staty = {}, extra = {}) {
+  const base = { utok: 0, obrana: 0, hodnota: 0, improvizace: 0, nastroj: 0 };
+  return { id, nazev: id, staty: { ...base, ...staty }, svet: 'sdilena', premiova: false, text: 'x', ...extra };
 }
 
-/** Uzly s jednotnou afinitou a tvrdostí (8 běžných + 1 Zátah). */
-export function syntetickeUzly({ afinity, tvrdost, zatahAfinity }) {
-  const uzly = Array.from({ length: 8 }, (_, i) => ({
-    id: `uzel-${i}`,
-    nazev: `Uzel ${i}`,
-    uvod: 'test',
-    afinity,
-    tvrdost,
-  }));
-  uzly.push({
-    id: 'zatah-test',
-    nazev: 'Zátah',
-    uvod: 'test',
-    afinity: zatahAfinity ?? afinity,
-    tvrdost,
-    specialni: 'zatah',
-  });
-  return uzly;
+/**
+ * Balík věcí: N specialistů na každý stat (silných), aby šla situace splnit.
+ * Volitelně pár GANGSTER zbraní.
+ */
+export function balikVeci({ naStat = 8, gangster = 2 } = {}) {
+  const staty = ['utok', 'obrana', 'hodnota', 'improvizace', 'nastroj'];
+  const out = [];
+  for (const s of staty) {
+    for (let i = 0; i < naStat; i++) out.push(vec(`${s}-${i}`, { [s]: 5 }));
+  }
+  for (let i = 0; i < gangster; i++) out.push(vec(`zbran-${i}`, { utok: 5 }, { stitek: 'GANGSTER' }));
+  return out;
 }
 
-/** @param {object} [prepis] */
-export function syntetickyObsah(prepis = {}) {
-  const afinity = { nasili: 0, lest: 0, uplatek: 0, utek: 0 };
+/** Situace se 4 sloty na dané staty (default útok/obrana/hodnota/nástroj). */
+export function situace(id, opts = {}) {
+  const { typ = 'npc', staty = ['utok', 'obrana', 'hodnota', 'nastroj'], kotva = 3, skryty = 3 } = opts;
   return {
-    karty: syntetickeKarty(20, { tag: 'lest', sila: 1 }),
-    uzly: syntetickeUzly({ afinity, tvrdost: 'zar' }),
+    id,
+    typ,
+    svet: '1930',
+    telegraf: 'test',
+    text: 'x',
+    sloty: staty.map((s, i) => ({
+      role: `role-${i}`,
+      stat: s,
+      kotva,
+      viditelnost: i === skryty ? 'skryta' : 'viditelna',
+    })),
+    pasmove_vysledky: {
+      hladce_loot: { loot: 'karta' },
+      s_nasledky: { postih_lehky: ['lehky-info'] },
+      prusvih: { postih_tezky: ['tezky-lock'] },
+    },
+  };
+}
+
+/** Minimální validní v3 obsah pro engine (ne přes loader — přímo). */
+export function syntetickyObsah(prepis = {}) {
+  const stitky = [
+    {
+      id: 'GANGSTER',
+      nazev: 'Gangster',
+      parametry: {
+        chovani_dle_typu: { npc: 'viditelna_role_selze', lecka: 'viditelna_role_selze', lokace: 'vzdy_pass', zatah: 'vzdy_pass', konfrontace: 'vzdy_pass' },
+        hlucnost_zar: 1,
+      },
+    },
+  ];
+  const postihy = [
+    { id: 'lehky-info', nazev: 'Lehký', typ: 'informacni', tier: 'lehky', trvani: 2, efekt: { druh: 'hide_staty' } },
+    { id: 'tezky-lock', nazev: 'Těžký', typ: 'zamkovy', tier: 'tezky', trvani: 'do_vyleceni', efekt: { druh: 'lock_gamble' } },
+  ];
+  const pronasledovatele = [
+    mkPursuer('agent-malone', { typ: 'stat', cil: 'hodnota' }),
+    mkPursuer('serif-brody', { typ: 'stitek', cil: 'GANGSTER' }),
+  ];
+  const mista = [
+    { id: 'truhla-a', typ: 'truhla', svet: '1930', text: 'x', odmena: { kredity_rozsah: [4, 6], vyber_karty: true } },
+    { id: 'motel-a', typ: 'motel', svet: '1930', text: 'x', sluzby: { smena_karty: 3, leceni_tezkeho: 6 } },
+  ];
+  return {
+    veci: balikVeci(),
+    situace: [situace('s1'), situace('s2'), situace('s3'), situace('s4'), situace('s5'), situace('s6'), situace('s7'), situace('s8'), situace('zatah', { typ: 'zatah' })],
+    postihy,
+    stitky,
+    mista,
+    pronasledovatele,
     cile: [],
-    pronasledovatele: [
-      {
-        id: 'agent-malone',
-        nazev: 'Malone',
-        ruseny_tag: 'uplatek',
-        pravidlo: 'test',
-        flavor: 'test',
-        lecka: { uvod: 'test', afinity: { ...afinity }, tvrdost: 'zar' },
-        konfrontace: { uvod: 'test', afinity: { ...afinity }, tvrdost: 'zraneni' },
-      },
-      {
-        id: 'serif-brody',
-        nazev: 'Brody',
-        ruseny_tag: 'nasili',
-        pravidlo: 'test',
-        flavor: 'test',
-        lecka: { uvod: 'test', afinity: { ...afinity }, tvrdost: 'zar' },
-        konfrontace: { uvod: 'test', afinity: { ...afinity }, tvrdost: 'zraneni' },
-      },
-    ],
+    postavy: [{ id: 'bartos', jmeno: 'Vincenc Bartoš' }, { id: 'kowalski', jmeno: 'Frank Kowalski' }],
     verze: 'test',
     ...prepis,
   };
 }
 
-/** N prokletých kopií jednoho efektu — deterministická aktivace v testech. */
-export function prokleteKopie(id, pocet = 8) {
-  return Array.from({ length: pocet }, () => ({
+function mkPursuer(id, rusi) {
+  const situ = (t) => ({
+    typ: t,
+    svet: '1930',
+    telegraf: 'test',
+    text: 'x',
+    sloty: ['utok', 'obrana', 'improvizace', 'utok'].map((s, i) => ({ role: `r${i}`, stat: s, kotva: 3, viditelnost: i === 3 ? 'skryta' : 'viditelna' })),
+    pasmove_vysledky: { hladce_loot: { loot: 'karta' }, s_nasledky: { postih_lehky: ['lehky-info'] }, prusvih: { postih_tezky: ['tezky-lock'] } },
+  });
+  return {
     id,
     nazev: id,
-    typ: 'prokleta',
-    tag: null,
-    sila: 0,
-    text: 'test',
-  }));
+    rusi: { ...rusi, pravidlo: 'test' },
+    flavor: 'test',
+    lecka: situ('lecka'),
+    konfrontace: situ('konfrontace'),
+  };
+}
+
+/** Hráči postava-1..N (nebo z obsahu). */
+export function hraci(n) {
+  return Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}` }));
 }
 
 /**
- * Deterministický driver: bez zadání volí první legální možnost.
+ * Deterministický driver: bez zadání committne první legální karty, přiřadí je
+ * do slotů popořadě, potvrdí; na mapě volí první nabídku; motel „dál".
  *
  * @param {ReturnType<import('../src/engine/state.js').createRun>} run
  * @param {object} [opts]
- * @param {(legal: object[], postava: object, state: object) => object} [opts.pickPlay]
- * @param {(pending: object, state: object) => string} [opts.pickRider]
- * @param {(state: object, postavaId: string) => {volba: string, cil: string}} [opts.pickVoice]
- * @param {(state: object) => string} [opts.pickRoute]
- * @param {(state: object, run: object) => void} [opts.probe] sonda na začátku každé play fáze
+ * @param {(legal, hrac, state) => object} [opts.pickCommit]
+ * @param {(state) => {slotIndex:number, cardId:string}[]} [opts.pickAssign]
+ * @param {(state) => string} [opts.pickRoute]
+ * @param {(state) => 'ukryt'|'dal'} [opts.pickMotel]
+ * @param {(state, run) => void} [opts.probe]
  * @returns {object[]} kompletní událostní log
  */
 export function drive(run, opts = {}) {
-  const pickPlay = opts.pickPlay ?? ((legal) => legal[0]);
-  const pickRider = opts.pickRider ?? ((pending) => pending.volby[0]);
-  const pickVoice =
-    opts.pickVoice ??
-    ((state) => ({ volba: 'bonus', cil: state.postavy.find((p) => !p.vyrazena).id }));
   let pojistka = 0;
-
   for (;;) {
     const s = run.getState();
     if (s.faze === 'ended') return run.getEvents();
-    if (++pojistka > 3000) throw new Error(`drive: run se nezastavil (fáze ${s.faze}).`);
+    if (++pojistka > 5000) throw new Error(`drive: run se nezastavil (fáze ${s.faze}).`);
 
-    if (s.faze === 'route') {
-      run.chooseRoute(opts.pickRoute ? opts.pickRoute(s) : s.nabidka.nabidka[0]);
-    } else if (s.faze === 'play') {
+    if (s.faze === 'map') {
+      run.chooseRoute(opts.pickRoute ? opts.pickRoute(s) : s.nabidka.nabidnuto[0].ref);
+    } else if (s.faze === 'motel_offer') {
+      run.motelChoice(opts.pickMotel ? opts.pickMotel(s) : 'dal');
+    } else if (s.faze === 'motel') {
+      run.leaveMotel();
+    } else if (s.faze === 'commit') {
       opts.probe?.(s, run);
-      for (const id of s.setkani.hlasujici) {
-        if (!s.setkani.hlasovaliPostavy.includes(id)) {
-          run.chooseVoice(id, pickVoice(run.getState(), id));
+      const commit = [];
+      for (const plan of s.situace.commitPlan) {
+        const legal = run.getHand(plan.hrac_id);
+        for (let i = 0; i < plan.pocet; i++) {
+          const karta = opts.pickCommit ? opts.pickCommit(legal, plan.hrac_id, s) : legal[i];
+          commit.push({ characterId: plan.hrac_id, cardId: karta.id });
         }
       }
-      for (const postava of s.postavy.filter((p) => !p.vyrazena)) {
-        if (s.setkani.zahranePostavy.includes(postava.id)) continue;
-        const legal = run.getLegalPlays(postava.id);
-        run.playCard(postava.id, pickPlay(legal, postava, run.getState()).karta.id);
-      }
+      run.commitCards(commit);
+    } else if (s.faze === 'assign') {
+      const assign = opts.pickAssign
+        ? opts.pickAssign(s)
+        : s.situace.committed.map((c, i) => ({ slotIndex: i, cardId: c.karta.id }));
+      run.assignToSlots(assign);
       run.confirmNode();
-    } else if (s.faze === 'rider') {
-      run.chooseRider(s.cekaNaRider.postava, pickRider(s.cekaNaRider, s));
     }
   }
-}
-
-/** Hráči postava-1..N. */
-export function hraci(n) {
-  return Array.from({ length: n }, (_, i) => ({ id: `postava-${i + 1}` }));
 }

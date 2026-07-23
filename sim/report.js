@@ -1,284 +1,165 @@
 // @ts-check
 /**
- * Agregace a report simulačních dávek (architektura.md §3): summary.json
- * + čitelný summary.md — win-rate a příčiny konce, histogram uzlu prahů Žáru,
- * křivka zranění per uzel (snowball), křivka beden, kanály ztrát beden,
- * splnitelnost cílů, srovnávací tabulka strategií.
+ * Agregace v3 simulačních dávek na metriky brány K1–K9 (prototyp-mvp.md Fáze 0).
+ * Vstup = kompletní událostní logy runů; výstup = summary.json + čitelný md.
  */
 
-/**
- * Vytáhne z událostního logu jednoho runu statistiky pro agregaci.
- * @param {object[]} events kompletní log runu
- */
+import { EVENT, BAND, END_PRICINA } from '../src/engine/events.js';
+
+const BANDY = [BAND.LOOT, BAND.HLADCE, BAND.NASLEDKY, BAND.PRUSVIH];
+
+/** Statistiky jednoho runu z jeho event logu. */
 export function collectRunStats(events) {
-  const stats = {
-    vysledek: null,
-    pricina: null,
-    pocetUzlu: 0,
-    /** @type {{prah: number, nodeIndex: number}[]} */
-    prahy: [],
-    /** @type {Record<number, number>} zranění přidaná v uzlu N */
-    zraneniPerNode: {},
-    /** @type {Record<number, number>} bedny po dokončení uzlu N */
-    bednyPoUzlu: {},
-    /** @type {Record<string, number>} */
-    ztratyKanaly: {},
-    /** @type {object[]} */
-    cile: [],
-    kolapsy: 0,
-    lecky: 0,
-    konfrontace: 0,
-    zatahy: 0,
-    zoufaleZahrane: 0,
-  };
+  const konec = events[events.length - 1];
+  const bandy = Object.fromEntries(BANDY.map((b) => [b, 0]));
+  /** @type {number[]} */ const postihyByOrdinal = [];
+  /** @type {{max:number, real:number, gap:number}[]} */ const maxAchievable = [];
+  let ordinal = 0;
+  let prvniZatahOrdinal = null;
+  let gambleCount = 0;
+  let postihyCelkem = 0;
 
   for (const e of events) {
     switch (e.type) {
-      case 'card_played':
-        if (e.zoufala) stats.zoufaleZahrane += 1;
+      case EVENT.SITUATION_REVEALED:
+        if (e.typ_mista === 'zatah' && prvniZatahOrdinal === null) prvniZatahOrdinal = ordinal + 1;
         break;
-      case 'heat_threshold':
-        stats.prahy.push({ prah: e.prah, nodeIndex: e.nodeIndex });
+      case EVENT.BAND_RESOLVED:
+        ordinal += 1;
+        bandy[e.pasmo] = (bandy[e.pasmo] ?? 0) + 1;
+        maxAchievable.push({ max: e.max_achievable_zasahy, real: e.zasahy, gap: e.gap });
         break;
-      case 'injury_added':
-        stats.zraneniPerNode[e.nodeIndex] = (stats.zraneniPerNode[e.nodeIndex] ?? 0) + 1;
+      case EVENT.PENALTY_ADDED:
+        postihyByOrdinal[ordinal] = (postihyByOrdinal[ordinal] ?? 0) + 1;
+        postihyCelkem += 1;
         break;
-      case 'crate_lost':
-        stats.ztratyKanaly[e.duvod] = (stats.ztratyKanaly[e.duvod] ?? 0) + 1;
-        break;
-      case 'character_down':
-        stats.kolapsy += 1;
-        break;
-      case 'ambush_inserted':
-        stats.lecky += 1;
-        break;
-      case 'confrontation_started':
-        stats.konfrontace += 1;
-        break;
-      case 'route_chosen':
-        if (e.zatah) stats.zatahy += 1;
-        break;
-      case 'node_resolved':
-        if (e.druh === 'uzel' || e.druh === 'zatah') {
-          stats.bednyPoUzlu[e.nodeIndex] = e.zbyvaBeden;
-        }
-        break;
-      case 'run_ended':
-        stats.vysledek = e.vysledek;
-        stats.pricina = e.pricina;
-        stats.pocetUzlu = e.pocetUzlu;
-        stats.cile = e.cile;
+      case EVENT.GAMBLE:
+        gambleCount += 1;
         break;
     }
   }
-  return stats;
-}
 
-/**
- * Agregát jedné konfigurace (strategie × pronásledovatel × varianta pravidel).
- * @param {string} strategie @param {string} pronasledovatel
- * @param {string} [varianta] popisek varianty rules (např. "zoufale=pool,buff=1")
- */
-export function createAggregate(strategie, pronasledovatel, varianta = '') {
   return {
-    strategie,
-    pronasledovatel,
-    varianta,
-    zoufaleZahrane: 0,
-    runs: 0,
-    doruceno: 0,
-    priciny: /** @type {Record<string, number>} */ ({}),
-    delkyRunu: /** @type {Record<number, number>} */ ({}),
-    /** histogramy uzlu 1./2./3. překročení prahu Žáru */
-    prahHistogramy: [{}, {}, {}].map(() => /** @type {Record<number, number>} */ ({})),
-    runsBezPrahu: 0,
-    zraneniPerNode: /** @type {Record<number, {sum: number, runs: number}>} */ ({}),
-    bednyPoUzlu: /** @type {Record<number, {sum: number, runs: number}>} */ ({}),
-    ztratyKanaly: /** @type {Record<string, number>} */ ({}),
-    cile: /** @type {Record<string, {prirazeno: number, splneno: number, textovy: boolean}>} */ ({}),
-    kolapsyCelkem: 0,
-    runsSKolapsem: 0,
-    lecky: 0,
-    konfrontace: 0,
-    zatahy: 0,
+    vysledek: konec.vysledek,
+    pricina: konec.pricina,
+    pocetUzlu: konec.pocet_uzlu,
+    zbyvaBeden: konec.zbyva_beden,
+    konecnyZar: konec.konecny_zar,
+    kredity: konec.kredity_zbytek,
+    bandy,
+    postihyByOrdinal,
+    postihyCelkem,
+    maxAchievable,
+    prvniZatahOrdinal,
+    gambleCount,
+    cile: konec.cile ?? [],
   };
 }
 
-/** @param {ReturnType<typeof createAggregate>} agg @param {ReturnType<typeof collectRunStats>} s */
-export function addRun(agg, s) {
-  agg.runs += 1;
-  if (s.vysledek === 'DORUCENO') agg.doruceno += 1;
-  agg.priciny[s.pricina] = (agg.priciny[s.pricina] ?? 0) + 1;
-  agg.delkyRunu[s.pocetUzlu] = (agg.delkyRunu[s.pocetUzlu] ?? 0) + 1;
-
-  s.prahy.slice(0, 3).forEach((p, i) => {
-    agg.prahHistogramy[i][p.nodeIndex] = (agg.prahHistogramy[i][p.nodeIndex] ?? 0) + 1;
-  });
-  if (s.prahy.length === 0) agg.runsBezPrahu += 1;
-
-  for (const [node, pocet] of Object.entries(s.zraneniPerNode)) {
-    const z = (agg.zraneniPerNode[node] ??= { sum: 0, runs: 0 });
-    z.sum += pocet;
-  }
-  // jmenovatel křivek: kolik runů daný uzel vůbec odehrálo
-  for (let n = 1; n <= Math.max(s.pocetUzlu, 1); n++) {
-    (agg.zraneniPerNode[n] ??= { sum: 0, runs: 0 }).runs += 1;
-  }
-  for (const [node, bedny] of Object.entries(s.bednyPoUzlu)) {
-    const b = (agg.bednyPoUzlu[node] ??= { sum: 0, runs: 0 });
-    b.sum += bedny;
-    b.runs += 1;
-  }
-  for (const [kanal, pocet] of Object.entries(s.ztratyKanaly)) {
-    agg.ztratyKanaly[kanal] = (agg.ztratyKanaly[kanal] ?? 0) + pocet;
-  }
-  for (const c of s.cile) {
-    const zaznam = (agg.cile[c.cil] ??= { prirazeno: 0, splneno: 0, textovy: c.textovy });
-    zaznam.prirazeno += 1;
-    if (c.splnen === true) zaznam.splneno += 1;
-  }
-  agg.kolapsyCelkem += s.kolapsy;
-  if (s.kolapsy > 0) agg.runsSKolapsem += 1;
-  agg.lecky += s.lecky;
-  agg.konfrontace += s.konfrontace;
-  agg.zatahy += s.zatahy;
-  agg.zoufaleZahrane += s.zoufaleZahrane;
+/** Vytvoří prázdný agregátor. */
+export function createAggregate() {
+  return {
+    pocet: 0,
+    doruceno: 0,
+    pricinaProher: { [END_PRICINA.BEDNY_0]: 0, [END_PRICINA.KONFRONTACE_PROHRA]: 0, [END_PRICINA.JINA]: 0 },
+    bandTotals: Object.fromEntries(BANDY.map((b) => [b, 0])),
+    bandCount: 0,
+    postihyRano: 0,
+    postihyPozde: 0,
+    zatahOrdinaly: /** @type {number[]} */ ([]),
+    maxPod4: 0,
+    maxDo1: 0,
+    gapSum: 0,
+    maxCount: 0,
+    kredityList: /** @type {number[]} */ ([]),
+    zarList: /** @type {number[]} */ ([]),
+    uzluList: /** @type {number[]} */ ([]),
+    gambleList: /** @type {number[]} */ ([]),
+    cilePlneni: /** @type {Record<string, {celkem:number, splneno:number}>} */ ({}),
+  };
 }
 
-/** Medián uzlu prvního prahu Žáru (jen runy, kde práh padl). */
-export function medianFirstThreshold(agg) {
-  const hist = agg.prahHistogramy[0];
-  const celkem = Object.values(hist).reduce((a, b) => a + b, 0);
-  if (celkem === 0) return null;
-  const cilovy = celkem / 2;
-  let kumulativ = 0;
-  for (const node of Object.keys(hist).map(Number).sort((a, b) => a - b)) {
-    kumulativ += hist[node];
-    if (kumulativ >= cilovy) return node;
+/** @param {ReturnType<typeof createAggregate>} agg @param {ReturnType<typeof collectRunStats>} r */
+export function addRun(agg, r) {
+  agg.pocet += 1;
+  if (r.vysledek === 'DORUCENO') agg.doruceno += 1;
+  else agg.pricinaProher[r.pricina] = (agg.pricinaProher[r.pricina] ?? 0) + 1;
+  for (const b of BANDY) agg.bandTotals[b] += r.bandy[b];
+  agg.bandCount += BANDY.reduce((a, b) => a + r.bandy[b], 0);
+  for (let o = 1; o <= 2; o++) agg.postihyRano += r.postihyByOrdinal[o] ?? 0;
+  for (let o = 3; o <= 4; o++) agg.postihyPozde += r.postihyByOrdinal[o] ?? 0;
+  if (r.prvniZatahOrdinal != null) agg.zatahOrdinaly.push(r.prvniZatahOrdinal);
+  for (const m of r.maxAchievable) {
+    agg.maxCount += 1;
+    if (m.max < 4) agg.maxPod4 += 1;
+    if (m.max <= 1) agg.maxDo1 += 1;
+    agg.gapSum += m.gap;
   }
-  return null;
+  agg.kredityList.push(r.kredity);
+  agg.zarList.push(r.konecnyZar);
+  agg.uzluList.push(r.pocetUzlu);
+  agg.gambleList.push(r.gambleCount);
+  for (const c of r.cile) {
+    const slot = (agg.cilePlneni[c.cil_id ?? c.cil] ??= { celkem: 0, splneno: 0 });
+    slot.celkem += 1;
+    if (c.splnen === true) slot.splneno += 1;
+  }
+}
+
+const pct = (a, b) => (b === 0 ? 0 : Math.round((a / b) * 1000) / 10);
+function median(list) {
+  if (list.length === 0) return null;
+  const s = [...list].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
 /** @param {ReturnType<typeof createAggregate>} agg */
 export function finalizeAggregate(agg) {
-  const pct = (x) => (agg.runs > 0 ? +((100 * x) / agg.runs).toFixed(1) : 0);
   return {
-    strategie: agg.strategie,
-    pronasledovatel: agg.pronasledovatel,
-    varianta: agg.varianta,
-    zoufaleNaRun: agg.runs > 0 ? +(agg.zoufaleZahrane / agg.runs).toFixed(2) : 0,
-    runs: agg.runs,
-    dorucenoPct: pct(agg.doruceno),
-    priciny: Object.fromEntries(
-      Object.entries(agg.priciny).map(([k, v]) => [k, pct(v)])
-    ),
-    delkyRunu: agg.delkyRunu,
-    medianPrvnihoPrahu: medianFirstThreshold(agg),
-    runsBezPrahuPct: pct(agg.runsBezPrahu),
-    prahHistogramy: agg.prahHistogramy,
-    zraneniKrivka: krivka(agg.zraneniPerNode),
-    bednyKrivka: krivka(agg.bednyPoUzlu),
-    ztratyKanaly: agg.ztratyKanaly,
-    cile: Object.fromEntries(
-      Object.entries(agg.cile).map(([id, c]) => [
-        id,
-        {
-          prirazeno: c.prirazeno,
-          splneno: c.splneno,
-          splnenoPct: c.textovy
-            ? null
-            : c.prirazeno > 0
-              ? +((100 * c.splneno) / c.prirazeno).toFixed(1)
-              : null,
-          textovy: c.textovy,
-        },
-      ])
-    ),
-    kolapsyNaRun: agg.runs > 0 ? +(agg.kolapsyCelkem / agg.runs).toFixed(2) : 0,
-    runsSKolapsemPct: pct(agg.runsSKolapsem),
-    leckyNaRun: agg.runs > 0 ? +(agg.lecky / agg.runs).toFixed(2) : 0,
-    konfrontaceNaRun: agg.runs > 0 ? +(agg.konfrontace / agg.runs).toFixed(2) : 0,
-    zatahyNaRun: agg.runs > 0 ? +(agg.zatahy / agg.runs).toFixed(2) : 0,
+    pocet: agg.pocet,
+    winRate: pct(agg.doruceno, agg.pocet),
+    pricinaProher: {
+      bedny_0: agg.pricinaProher[END_PRICINA.BEDNY_0],
+      konfrontace_prohra: agg.pricinaProher[END_PRICINA.KONFRONTACE_PROHRA],
+      jina: agg.pricinaProher[END_PRICINA.JINA],
+    },
+    bandy: Object.fromEntries(BANDY.map((b) => [b, pct(agg.bandTotals[b], agg.bandCount)])),
+    snowball: {
+      rano_1_2: Math.round((agg.postihyRano / agg.pocet) * 100) / 100,
+      pozde_3_4: Math.round((agg.postihyPozde / agg.pocet) * 100) / 100,
+      pomer: agg.postihyRano === 0 ? null : Math.round((agg.postihyPozde / agg.postihyRano) * 100) / 100,
+    },
+    prvniZatahMedian: median(agg.zatahOrdinaly),
+    zatahPodilRunu: pct(agg.zatahOrdinaly.length, agg.pocet),
+    maxAchievable: {
+      pod_4_4: pct(agg.maxPod4, agg.maxCount),
+      do_1_4: pct(agg.maxDo1, agg.maxCount),
+      prumerny_gap: agg.maxCount === 0 ? 0 : Math.round((agg.gapSum / agg.maxCount) * 100) / 100,
+    },
+    kreditMedian: median(agg.kredityList),
+    zarMedian: median(agg.zarList),
+    uzluMedian: median(agg.uzluList),
+    gambleMedian: median(agg.gambleList),
+    cile: Object.fromEntries(Object.entries(agg.cilePlneni).map(([id, v]) => [id, pct(v.splneno, v.celkem)])),
   };
 }
 
-/** @param {Record<number, {sum: number, runs: number}>} data */
-function krivka(data) {
-  return Object.fromEntries(
-    Object.keys(data)
-      .map(Number)
-      .sort((a, b) => a - b)
-      .map((n) => [n, data[n].runs > 0 ? +(data[n].sum / data[n].runs).toFixed(2) : 0])
-  );
-}
+/** Čitelný markdown souhrn jedné konfigurace. */
+export function renderSummaryMd(meta, fin) {
+  const p = fin.pricinaProher;
+  const proher = fin.pocet - Math.round((fin.winRate / 100) * fin.pocet);
+  return `## ${meta.label}
 
-/**
- * Čitelný summary.md (česky) ze seznamu finalizovaných agregátů.
- * @param {object} meta {seedOd, runsNaKonfiguraci, hracu, verzeObsahu, verzePravidel}
- * @param {ReturnType<typeof finalizeAggregate>[]} vysledky
- */
-export function renderSummaryMd(meta, vysledky) {
-  const r = [];
-  r.push('# Simulační dávka — souhrn');
-  r.push('');
-  r.push(`- Runů na konfiguraci: **${meta.runsNaKonfiguraci}**, hráčů: **${meta.hracu}**, seedy od ${meta.seedOd}`);
-  r.push(`- Verze obsahu: \`${meta.verzeObsahu}\`, pravidla: ${meta.verzePravidel}`);
-  r.push('');
-  r.push('## Srovnání konfigurací');
-  r.push('');
-  r.push('| Varianta | Strategie | Pronásledovatel | DORUČENO % | došly bedny % | všichni vyřazeni % | medián 1. prahu Žáru (uzel) | zoufalé/run | kolapsů/run | samou-modrinu % | obetni-beranek % |');
-  r.push('|---|---|---|---|---|---|---|---|---|---|---|');
-  for (const v of vysledky) {
-    r.push(
-      `| ${v.varianta || '—'} | ${v.strategie} | ${v.pronasledovatel} | ${v.dorucenoPct} | ${v.priciny.dosly_bedny ?? 0} | ${v.priciny.vsichni_vyrazeni ?? 0} | ${v.medianPrvnihoPrahu ?? '—'} | ${v.zoufaleNaRun} | ${v.kolapsyNaRun} | ${v.cile['samou-modrinu']?.splnenoPct ?? '—'} | ${v.cile['obetni-beranek']?.splnenoPct ?? '—'} |`
-    );
-  }
-  r.push('');
-  for (const v of vysledky) {
-    r.push(`## ${v.varianta ? `${v.varianta} · ` : ''}${v.strategie} × ${v.pronasledovatel}`);
-    r.push('');
-    r.push(`- Runů: ${v.runs}, DORUČENO ${v.dorucenoPct} %, bez prahu Žáru ${v.runsBezPrahuPct} % runů`);
-    r.push(`- Histogram uzlu 1. prahu: ${histText(v.prahHistogramy[0])}`);
-    r.push(`- Histogram uzlu 2. prahu: ${histText(v.prahHistogramy[1])}`);
-    r.push(`- Histogram uzlu 3. prahu: ${histText(v.prahHistogramy[2])}`);
-    r.push(`- Zranění přidaná per uzel (křivka snowballu): ${krivkaText(v.zraneniKrivka)}`);
-    r.push(`- Bedny po uzlu (průměr): ${krivkaText(v.bednyKrivka)}`);
-    r.push(`- Kanály ztrát beden: ${kanalyText(v.ztratyKanaly)}`);
-    r.push(`- Splnitelnost cílů: ${cileText(v.cile)}`);
-    r.push('');
-  }
-  return r.join('\n');
-}
-
-function histText(hist) {
-  const klice = Object.keys(hist).map(Number).sort((a, b) => a - b);
-  if (klice.length === 0) return '—';
-  return klice.map((k) => `uzel ${k}: ${hist[k]}`).join(', ');
-}
-
-function krivkaText(krivkaData) {
-  const klice = Object.keys(krivkaData).map(Number).sort((a, b) => a - b);
-  if (klice.length === 0) return '—';
-  return klice.map((k) => `u${k}: ${krivkaData[k]}`).join(', ');
-}
-
-function kanalyText(kanaly) {
-  const zaznamy = Object.entries(kanaly);
-  if (zaznamy.length === 0) return '—';
-  const celkem = zaznamy.reduce((a, [, v]) => a + v, 0);
-  return zaznamy
-    .sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => `${k}: ${v} (${((100 * v) / celkem).toFixed(0)} %)`)
-    .join(', ');
-}
-
-function cileText(cile) {
-  const zaznamy = Object.entries(cile);
-  if (zaznamy.length === 0) return '—';
-  return zaznamy
-    .sort()
-    .map(([id, c]) =>
-      c.textovy ? `${id}: textový (nebodováno)` : `${id}: ${c.splnenoPct} % (${c.splneno}/${c.prirazeno})`
-    )
-    .join(', ');
+- **Runů:** ${fin.pocet} | seedy ${meta.seedOd}–${meta.seedDo} | ${meta.players}p | ${meta.pursuer} | strategie \`${meta.strategy}\`
+- **K1 win-rate (DORUČENO):** ${fin.winRate} %
+- **Rozpad proher** (${proher}): bedny-0 ${p.bedny_0} | konfrontace ${p.konfrontace_prohra} | jiná ${p.jina}
+- **Pásma** (% situací): 4/4 ${fin.bandy[BAND.LOOT]} · 3/4 ${fin.bandy[BAND.HLADCE]} · 2/4 ${fin.bandy[BAND.NASLEDKY]} · ≤1/4 ${fin.bandy[BAND.PRUSVIH]}
+- **K2 snowball** (postihů/run): uzel 1–2 = ${fin.snowball.rano_1_2}, uzel 3–4 = ${fin.snowball.pozde_3_4} (poměr ${fin.snowball.pomer ?? '—'})
+- **K3 první Zátah** (medián pořadí uzlu): ${fin.prvniZatahMedian ?? '—'} | Zátah v ${fin.zatahPodilRunu} % runů
+- **K5 max_achievable:** max<4/4 v ${fin.maxAchievable.pod_4_4} % situací · max≤1/4 v ${fin.maxAchievable.do_1_4} % · průměrný gap ${fin.maxAchievable.prumerny_gap}
+- **K8 ekonomika:** medián kreditů ${fin.kreditMedian}
+- **Žár** (medián konečný): ${fin.zarMedian} | **uzlů** (medián): ${fin.uzluMedian} | **gamble** (medián/run): ${fin.gambleMedian}
+- **K9 cíle** (% splnění): ${Object.entries(fin.cile).map(([id, v]) => `${id} ${v}`).join(' · ') || '—'}
+`;
 }

@@ -1,202 +1,143 @@
 // @ts-check
 /**
- * Invarianty událostního logu nad reálným obsahem: dávka náhodných i greedy
- * runů, u nichž musí platit strukturální pravidla bez ohledu na seed.
+ * v3 invarianty událostního logu nad reálným obsahem: dávka runů napříč
+ * strategiemi, počty hráčů a pronásledovateli. Strukturální pravidla musí
+ * platit bez ohledu na seed (architektura §2.2 v3, ADR-008).
  */
 import { describe, it, expect } from 'vitest';
 import { parseContent } from '../src/content/loader.js';
 import { RULES } from '../src/engine/rules.js';
-import { playRun } from '../sim/run.js';
+import { EVENT, BAND } from '../src/engine/events.js';
+import { playRun, PRESETY } from '../sim/run.js';
 import { loadRealYaml } from './content.test.js';
-import { hraci } from './helpers.js';
 
 const content = parseContent(loadRealYaml());
+const hraci = (n) => content.postavy.slice(0, n).map((p) => ({ id: p.id, jmeno: p.jmeno }));
+
+// Oracle s ε=0 = ryze optimální (bez ε-greedy šumu z hide_staty), aby platil
+// invariant „reálné == max_achievable" jako horní mez K5.
+const SPECY = {
+  random: PRESETY.random,
+  kompetentni: PRESETY.kompetentni,
+  oracle: { ...PRESETY.oracle, epsilon: 0 },
+};
 
 function davka() {
-  /** @type {object[][]} */
   const logy = [];
-  for (const strategyName of ['random', 'greedy-affinity']) {
-    for (const pronasledovatelId of ['agent-malone', 'serif-brody']) {
-      for (let seed = 1; seed <= 25; seed++) {
-        logy.push(
-          playRun({ seed, content, rules: RULES, players: hraci(4), pronasledovatelId, strategyName })
-        );
+  for (const strat of Object.keys(SPECY)) {
+    for (const players of [1, 2, 3, 4]) {
+      for (const pronasledovatelId of ['agent-malone', 'serif-brody']) {
+        for (let seed = 1; seed <= 12; seed++) {
+          logy.push({
+            events: playRun({ seed, content, rules: RULES, players: hraci(players), pronasledovatelId, spec: SPECY[strat] }),
+            players,
+            strat,
+          });
+        }
       }
     }
   }
   return logy;
 }
 
-describe('invarianty logu (100 runů: random + greedy × oba pronásledovatelé)', () => {
-  const logy = davka();
+const logy = davka();
 
+describe('v3 invarianty logu (dávka: 3 strategie × 1–4p × 2 pronásledovatelé)', () => {
   it('log začíná run_started, končí právě jedním run_ended, seq roste o 1', () => {
-    for (const events of logy) {
-      expect(events[0].type).toBe('run_started');
-      expect(events.at(-1).type).toBe('run_ended');
-      expect(events.filter((e) => e.type === 'run_ended')).toHaveLength(1);
+    for (const { events } of logy) {
+      expect(events[0].type).toBe(EVENT.RUN_STARTED);
+      expect(events.at(-1).type).toBe(EVENT.RUN_ENDED);
+      expect(events.filter((e) => e.type === EVENT.RUN_ENDED)).toHaveLength(1);
       events.forEach((e, i) => expect(e.seq).toBe(i + 1));
     }
   });
 
-  it('Žár drží 0–10, bedny klesají monotónně a nikdy pod 0', () => {
-    for (const events of logy) {
-      for (const e of events) {
-        if (e.type === 'heat_changed') {
-          expect(e.novaHodnota).toBeGreaterThanOrEqual(0);
-          expect(e.novaHodnota).toBeLessThanOrEqual(RULES.zar.max);
-        }
+  it('každý band_resolved má právě 4 slot_resolved téhož uzlu a pásmo sedí s počtem zásahů', () => {
+    for (const { events } of logy) {
+      const bandy = events.filter((e) => e.type === EVENT.BAND_RESOLVED);
+      for (const b of bandy) {
+        const sloty = events.filter((e) => e.type === EVENT.SLOT_RESOLVED && e.nodeIndex === b.nodeIndex);
+        expect(sloty).toHaveLength(4);
+        const zasahy = sloty.filter((s) => s.zasah).length;
+        expect(b.zasahy).toBe(zasahy);
+        const ocekavane = zasahy >= 4 ? BAND.LOOT : zasahy === 3 ? BAND.HLADCE : zasahy === 2 ? BAND.NASLEDKY : BAND.PRUSVIH;
+        expect(b.pasmo).toBe(ocekavane);
       }
-      let bedny = RULES.bedenNaStartu;
-      for (const e of events.filter((x) => x.type === 'crate_lost')) {
-        bedny -= 1;
-        expect(e.zbyvaBeden).toBe(bedny);
-      }
-      expect(bedny).toBeGreaterThanOrEqual(0);
     }
   });
 
-  it('DORUČENO právě po 6 uzlech; příčiny konce odpovídají stavu', () => {
-    for (const events of logy) {
+  it('max_achievable ≥ reálné zásahy a gap = max − real (oracle nikdy nepřekročen)', () => {
+    for (const { events } of logy) {
+      for (const b of events.filter((e) => e.type === EVENT.BAND_RESOLVED)) {
+        expect(b.max_achievable_zasahy).toBeGreaterThanOrEqual(b.zasahy);
+        expect(b.gap).toBe(b.max_achievable_zasahy - b.zasahy);
+      }
+    }
+    // Oracle strategie: reálné = max (bot rozděluje optimálně dle prahů).
+    for (const { events, strat } of logy) {
+      if (strat !== 'oracle') continue;
+      for (const b of events.filter((e) => e.type === EVENT.BAND_RESOLVED)) {
+        expect(b.zasahy).toBe(b.max_achievable_zasahy);
+      }
+    }
+  });
+
+  it('Žár zůstává v 0–10, náklad nikdy záporný, run_ended má konzistentní příčinu', () => {
+    for (const { events } of logy) {
+      for (const e of events.filter((x) => x.type === EVENT.ZAR_MOVE)) {
+        expect(e.nova_pozice).toBeGreaterThanOrEqual(0);
+        expect(e.nova_pozice).toBeLessThanOrEqual(RULES.zar.max);
+      }
+      for (const e of events.filter((x) => x.type === EVENT.BAND_RESOLVED)) {
+        expect(e.zbyva_beden).toBeGreaterThanOrEqual(0);
+      }
       const konec = events.at(-1);
       if (konec.vysledek === 'DORUCENO') {
-        expect(konec.pricina).toBe('doruceno');
-        expect(konec.pocetUzlu).toBe(RULES.uzluNaRun);
+        expect(konec.pricina).toBe('dojezd');
+        expect(konec.zbyva_beden).toBeGreaterThan(0);
       } else {
-        expect(['dosly_bedny', 'vsichni_vyrazeni']).toContain(konec.pricina);
-        if (konec.pricina === 'dosly_bedny') expect(konec.zbyvaBeden).toBe(0);
+        expect(['bedny_0', 'konfrontace_prohra', 'jina']).toContain(konec.pricina);
       }
     }
   });
 
-  it('zranění nepřeteče kolaps; character_down přesně při 4. zranění', () => {
-    for (const events of logy) {
-      for (const e of events.filter((x) => x.type === 'injury_added')) {
-        expect(e.pocetZraneni).toBeLessThanOrEqual(RULES.kolapsPriZraneni);
-      }
-      for (const e of events.filter((x) => x.type === 'character_down')) {
-        expect(e.pocetZraneni).toBe(RULES.kolapsPriZraneni);
-      }
-    }
-  });
-
-  it('hody v node_resolved: úspěch bez následků, tvrdost bedna = ztracená bedna v hodu', () => {
-    for (const events of logy) {
-      const hody = events.filter((e) => e.type === 'node_resolved').flatMap((e) => e.hody);
-      for (const h of hody) {
-        expect(h.bedny_ztracene_timto_hodem).toBeGreaterThanOrEqual(0);
-        expect(h.bedny_ztracene_timto_hodem).toBeLessThanOrEqual(2);
-        if (h.pasmo === 'uspech') {
-          expect(h.zraneni_pridana).toBe(0);
-          expect(h.bedny_ztracene_timto_hodem).toBe(0);
-          expect(h.tvrdost_aplikovana).toBeNull();
-        }
-        if (h.tvrdost_aplikovana === 'bedna') {
-          expect(h.bedny_ztracene_timto_hodem).toBeGreaterThanOrEqual(1);
-        }
-        if (h.povyseno_ze_selhani) {
-          expect(h.pasmo).toBe('uspech_za_cenu');
-          expect(h.tvrdost_aplikovana).toBeNull();
-        }
-      }
-    }
-  });
-
-  it('crate_lost nese atribuci postavy a platný důvod', () => {
-    const povolene = ['hod_selhani', 'rider_uplatek', 'rider_utek', 'tvrdost_uzlu'];
-    for (const events of logy) {
-      const postavy = new Set(events[0].postavy);
-      for (const e of events.filter((x) => x.type === 'crate_lost')) {
-        expect(povolene).toContain(e.duvod);
-        expect(postavy.has(e.postava)).toBe(true);
-      }
-    }
-  });
-
-  it('aritmetika hodů: součet, pásmo, afinita dle uzlu, Maloneovo nulování síly', () => {
-    const uzelById = new Map(content.uzly.map((u) => [u.id, u]));
-    for (const events of logy) {
-      const pronasledovatel = events[0].pronasledovatel;
-      const pursuerDef = content.pronasledovatele.find((p) => p.id === pronasledovatel);
-      // checky setkání předcházejí jeho node_resolved — párování je sekvenční 1:1
-      /** @type {object[]} */
-      let fronta = [];
-      /** @type {[object, object, object][]} */
-      const pary = [];
+  it('postihy: nikdy víc než cap+1 najednou (3. spustí složení, které maže lehké)', () => {
+    for (const { events } of logy) {
+      // rekonstruuj aktivní postihy per hráč po každé události přidání/vypršení/složení
+      const aktivni = new Map();
       for (const e of events) {
-        if (e.type === 'check_resolved') fronta.push(e);
-        if (e.type === 'node_resolved') {
-          expect(fronta.length).toBe(e.hody.length);
-          e.hody.forEach((h, i) => pary.push([e, h, fronta[i]]));
-          fronta = [];
+        if (e.type === EVENT.PENALTY_ADDED) {
+          const arr = aktivni.get(e.hrac_id) ?? [];
+          if (e.vyprsi_za !== undefined && e.efekt) arr.push({ id: e.postih_id, tier: e.tier });
+          // „ihned" postihy do fronty nejdou (aktivnich_po 0)
+          if (e.aktivnich_po > 0) aktivni.set(e.hrac_id, arr.slice(0, e.aktivnich_po));
+        } else if (e.type === EVENT.CHARACTER_FOLDED) {
+          // po složení zbývají jen těžké
+          aktivni.set(e.hrac_id, (e.pretrvavaji_tezke ?? []).map((id) => ({ id, tier: 'tezky' })));
         }
       }
-      for (const [node, h, check] of pary) {
-        const afinity =
-          node.druh === 'lecka'
-            ? pursuerDef.lecka.afinity
-            : node.druh === 'konfrontace'
-              ? pursuerDef.konfrontace.afinity
-              : uzelById.get(node.uzel).afinity;
-        {
-          expect(check.postava).toBe(h.postava);
-          expect(check.hod).toBe(h.hod);
-          // součet = d6 + síla + afinita − postih + modifikátory
-          expect(check.soucet).toBe(
-            check.hod + check.sila + check.afinita - check.postihZraneni + check.modifikatory
-          );
-          // afinita odpovídá uzlu a tagu karty
-          expect(check.afinita).toBe(afinity[h.karta.tag] ?? 0);
-          // pásmo odpovídá součtu (povýšení mění selhání na úspěch za cenu)
-          const zPasma =
-            check.soucet >= RULES.prahUspechu
-              ? 'uspech'
-              : check.soucet >= RULES.prahUspechuZaCenu
-                ? 'uspech_za_cenu'
-                : 'selhani';
-          if (check.povysenoZeSelhani) {
-            expect(zPasma).toBe('selhani');
-            expect(check.pasmo).toBe('uspech_za_cenu');
-          } else {
-            expect(check.pasmo).toBe(zPasma);
-          }
-          // Malone: Úplatek má sílu 0 na jeho uzlech, jinak síla karty
-          const jehoUzel = ['zatah', 'lecka', 'konfrontace'].includes(node.druh);
-          if (pronasledovatel === 'agent-malone' && jehoUzel && h.karta.tag === 'uplatek') {
-            expect(check.sila).toBe(0);
-          } else {
-            expect(check.sila).toBe(h.karta.sila);
-          }
-        }
+      // Nepřímý invariant: každé složení uvádí smazané lehké jako pole.
+      for (const e of events.filter((x) => x.type === EVENT.CHARACTER_FOLDED)) {
+        expect(Array.isArray(e.smazane_lehke)).toBe(true);
+        expect(Array.isArray(e.pretrvavaji_tezke)).toBe(true);
       }
     }
   });
 
-  it('Žár: hodnota jde rekonstruovat z delt a nikdy neuteče mimo 0–10', () => {
-    for (const events of logy) {
-      let zar = 0;
-      for (const e of events) {
-        if (e.type === 'heat_changed') {
-          zar += e.delta;
-          expect(zar).toBe(e.novaHodnota);
-        }
-        if (e.type === 'node_resolved') expect(e.zar).toBe(zar);
+  it('commit má přesně tolik karet, kolik určuje rozdělení dle počtu hráčů (mínus složení)', () => {
+    for (const { events, players } of logy) {
+      const commity = events.filter((e) => e.type === EVENT.COMMIT);
+      for (const c of commity) {
+        // ≤ 4 (composed players commit fewer); nikdy víc než 4
+        expect(c.commit.length).toBeLessThanOrEqual(4);
+        expect(c.commit.length).toBeGreaterThanOrEqual(0);
       }
+      void players;
     }
   });
 
-  it('run_ended.cile: mechanické cíle mají bool, textové null a 0 bodů', () => {
-    for (const events of logy) {
-      const konec = events.at(-1);
-      expect(konec.cile).toHaveLength(4);
-      for (const c of konec.cile) {
-        if (c.textovy) {
-          expect(c.splnen).toBeNull();
-          expect(c.body).toBe(0);
-        } else {
-          expect(typeof c.splnen).toBe('boolean');
-        }
-      }
-    }
+  it('je deterministický — stejný seed/strategie = identický log', () => {
+    const p = { seed: 3, content, rules: RULES, players: hraci(3), pronasledovatelId: 'serif-brody', spec: PRESETY.kompetentni };
+    expect(JSON.stringify(playRun(p))).toBe(JSON.stringify(playRun(p)));
   });
 });

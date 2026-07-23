@@ -1,199 +1,205 @@
 // @ts-check
 /**
- * Strategie hráčů pro simulátor (architektura.md §3):
- * - random          … baseline šumu
- * - greedy-affinity … vždy nejlepší tag+síla do afinity
- * - heat-averse     … minimalizuje Žár (vyhýbá se hlučným kartám a tvrdosti zar)
- * - tag-spam:<tag>  … hraje jediný tag — detektor dominantní strategie
+ * Botí strategie pro v3 simulátor (architektura.md §3, prototyp-mvp.md Fáze 0).
  *
- * Rider volby a hlas z auta jsou součástí strategie. Strategie mají VLASTNÍ
- * RNG stream (odvozený ze seedu runu) — nesahají na RNG enginu, determinismus
- * dávky zůstává zachován.
+ * Tři osy (kombinují se):
+ * - COMMIT (proti telegrafu, naslepo): informovany (čte trend viditelných statů
+ *   s fidelitou p) / naivni / monokultura (jeden stat — detektor K4b).
+ * - PŘIŘAZENÍ do slotů: oracle (zná prahy → horní mez max_achievable) /
+ *   memorizacni (zná stabilní kotvy, ne per-instance šum) / kompetentni (zná
+ *   staty, ne prahy) / greedy / random / cile (bias k vlastnímu cíli).
+ * - EKONOMIKA v motelu: adaptivni / lecit / smenit / hoard.
  *
- * Modelová rozhodnutí (heuristiky riderů/hlasu, dokumentováno i v závěrečné
- * zprávě fáze 1):
- * - greedy/tag-spam: Úplatek platí bednu, zbývají-li ≥2; Útěk bere zranění,
- *   dokud má postava <2 zranění, pak bednu (zbývají-li ≥2), jinak zranění.
- * - heat-averse: platí bednu už kvůli Žáru (vyhne se selhání uzlu) při ≥2;
- *   jinak jako greedy.
- * - hlas z auta: všechny kromě random dávají +1 nejzraněnější aktivní postavě;
- *   random volí náhodně (větev i cíl).
+ * Info-postih hide_staty → ε-greedy přiřazení (ε = spec.epsilon). Bot má VLASTNÍ
+ * RNG stream (odvozený ze seedu runu) — nesahá na RNG enginu, determinismus
+ * dávky zůstává. Bot NEZNÁ nic, co by hráč u stolu neviděl, kromě explicitních
+ * „vševědoucích" strategií (oracle/memorizacni) sloužících jako měřicí meze.
  */
 
 import { createRng } from '../src/engine/rng.js';
-import { effectiveStrength } from '../src/engine/resolve.js';
+import { resolveSlot } from '../src/engine/resolve.js';
 
-/**
- * @param {string} nazev random | greedy-affinity | heat-averse | tag-spam:<tag>
- * @param {number} seed seed runu (strategie si z něj odvodí vlastní stream)
- * @param {{uzly: object[]}} content pro náhled na afinity uzlů při volbě cesty
- */
-export function createStrategy(nazev, seed, content) {
-  const rng = createRng((seed ^ 0x5f356495) >>> 0);
-  const uzelById = new Map(content.uzly.map((u) => [u.id, u]));
-
-  if (nazev === 'random') return randomStrategy(rng);
-  if (nazev === 'greedy-affinity') return greedyStrategy(rng, uzelById, { heatAverse: false });
-  if (nazev === 'heat-averse') return greedyStrategy(rng, uzelById, { heatAverse: true });
-  if (nazev.startsWith('tag-spam:')) {
-    const tag = nazev.split(':')[1];
-    if (!['nasili', 'lest', 'uplatek', 'utek'].includes(tag)) {
-      throw new Error(`Neznámý tag pro tag-spam: „${tag}".`);
-    }
-    return tagSpamStrategy(rng, uzelById, tag);
-  }
-  throw new Error(`Neznámá strategie „${nazev}".`);
-}
-
-/* ---------------- pomocníci ---------------- */
-
-/** Hodnota zahrání: efektivní síla + afinita (+ u zoufalé odpuštěný postih). */
-function playValue(volba, uzel, druhSetkani, pronasledovatelId, zraneni) {
-  const eff = effectiveStrength(volba.karta, druhSetkani, pronasledovatelId);
-  const afinita = uzel.afinity[volba.karta.tag] ?? 0;
-  const odpustenyPostih = volba.zoufala ? Math.min(zraneni, 3) : 0;
-  return eff + afinita + odpustenyPostih;
-}
-
-function activeChars(state) {
-  return state.postavy.filter((p) => !p.vyrazena);
-}
-
-function mostInjuredActive(state) {
-  const aktivni = activeChars(state);
-  return aktivni.reduce((max, p) => (p.zraneni > max.zraneni ? p : max), aktivni[0]);
-}
-
-/** Nejlepší dosažitelná hodnota zahrání postavy proti uzlu (z ruky; bez prokletých omezení — aproximace pro volbu cesty). */
-function bestHandValue(postava, uzel, pronasledovatelId) {
-  let best = -Infinity;
-  for (const karta of postava.ruka) {
-    const v = playValue({ karta, zoufala: false }, uzel, 'uzel', pronasledovatelId, postava.zraneni);
-    if (v > best) best = v;
-  }
-  return best === -Infinity ? 0 : best;
-}
-
-function defaultRider(state, pending, { heatAverse }) {
-  const postava = state.postavy.find((p) => p.id === pending.postava);
-  if (pending.typ === 'uplatek') {
-    return state.zbyvaBeden >= 2 ? 'zaplatit_bednu' : 'nechat_selhani';
-  }
-  // utek
-  if (!pending.volby.includes('bedna')) return 'zraneni';
-  if (heatAverse) {
-    return postava.zraneni >= 3 && state.zbyvaBeden >= 2 ? 'bedna' : 'zraneni';
-  }
-  if (postava.zraneni >= 2 && state.zbyvaBeden >= 2) return 'bedna';
-  return 'zraneni';
-}
-
-function defaultVoice(state) {
-  return { volba: 'bonus', cil: mostInjuredActive(state).id };
-}
-
-/* ---------------- strategie ---------------- */
-
-/** @param {ReturnType<typeof createRng>} rng */
-function randomStrategy(rng) {
-  return {
-    nazev: 'random',
-    chooseRoute(state) {
-      return rng.pick(state.nabidka.nabidka);
-    },
-    choosePlay(state, legal) {
-      return rng.pick(legal).karta.id;
-    },
-    chooseRider(state, pending) {
-      return rng.pick(pending.volby);
-    },
-    chooseVoice(state) {
-      const cil = rng.pick(activeChars(state)).id;
-      return { volba: rng.pick(['bonus', 'prokleta']), cil };
-    },
+/** @param {number} seed */
+export function createStrategy(spec, seed) {
+  const s = {
+    commit: 'informovany',
+    assign: 'kompetentni',
+    econ: 'adaptivni',
+    fidelita: 0.7,
+    epsilon: 0.4,
+    monoStat: 'utok',
+    gamble: false,
+    ...spec,
   };
-}
+  const rng = createRng((seed ^ 0x9e3779b9) >>> 0);
 
-/**
- * greedy-affinity / heat-averse. Heat-averse penalizuje hlučné karty
- * (o cenu Žáru, u Brodyho 2) a cesty s tvrdostí `zar`.
- */
-function greedyStrategy(rng, uzelById, { heatAverse }) {
   return {
-    nazev: heatAverse ? 'heat-averse' : 'greedy-affinity',
-    chooseRoute(state) {
-      const kandidati = state.nabidka.nabidka.map((id) => {
-        const uzel = uzelById.get(id);
-        let skore = activeChars(state).reduce(
-          (sum, p) => sum + bestHandValue(p, uzel, state.pronasledovatel.id),
-          0
-        );
-        if (heatAverse && uzel.tvrdost === 'zar') skore -= 2;
-        return { id, skore };
-      });
-      kandidati.sort((a, b) => b.skore - a.skore);
-      return kandidati[0].id;
+    spec: s,
+
+    /* -------- mapa -------- */
+    pickRoute(state) {
+      const n = state.nabidka.nabidnuto;
+      return n[rng.int(n.length)].ref;
     },
-    choosePlay(state, legal, postava) {
-      const uzel = state.setkani.uzel;
-      const brody = state.pronasledovatel.id === 'serif-brody';
-      let best = null;
-      let bestSkore = -Infinity;
-      for (const volba of legal) {
-        let skore = playValue(volba, uzel, state.setkani.druh, state.pronasledovatel.id, postava.zraneni);
-        if (heatAverse && volba.karta.hlucna) skore -= brody ? 2 : 1;
-        // deterministický tie-break: nehlučná dřív, pak nižší síla (šetří silné karty)
-        const lepsi =
-          skore > bestSkore ||
-          (skore === bestSkore &&
-            best &&
-            ((best.karta.hlucna && !volba.karta.hlucna) ||
-              (best.karta.hlucna === Boolean(volba.karta.hlucna) && volba.karta.sila < best.karta.sila)));
-        if (lepsi) {
-          best = volba;
-          bestSkore = skore;
+
+    /* -------- motel -------- */
+    pickMotelOffer(state) {
+      const maTezky = state.postavy.some((p) => p.postihy.some((x) => x.tier === 'tezky'));
+      if (s.econ === 'hoard') return 'dal';
+      if (s.econ === 'lecit' || s.econ === 'adaptivni') {
+        if (maTezky && state.kredity >= 6) return 'ukryt';
+      }
+      if (s.econ === 'smenit' && state.kredity >= 3) return 'ukryt';
+      return 'dal';
+    },
+
+    motelActions(state, run) {
+      // Léčení těžkých postihů (lecit/adaptivni), pak volitelně směna nejslabší karty.
+      if (s.econ === 'lecit' || s.econ === 'adaptivni') {
+        for (const p of state.postavy) {
+          for (const x of p.postihy.filter((y) => y.tier === 'tezky')) {
+            if (run.getState().kredity >= 6) run.spendCredits({ sluzba: 'leceni', hracId: p.id, postihId: x.id });
+          }
         }
       }
-      return best.karta.id;
+      if (s.econ === 'smenit' || s.econ === 'adaptivni') {
+        const st = run.getState();
+        if (st.kredity >= 3) {
+          const p = st.postavy.find((x) => x.ruka.length > 0);
+          if (p) {
+            const nejslabsi = p.ruka.reduce((a, b) => (statSum(a) <= statSum(b) ? a : b));
+            run.spendCredits({ sluzba: 'smena', hracId: p.id, kartaId: nejslabsi.id });
+          }
+        }
+      }
+      run.leaveMotel();
     },
-    chooseRider(state, pending) {
-      return defaultRider(state, pending, { heatAverse });
+
+    /* -------- commit (naslepo dle telegrafu) -------- */
+    commit(state, run) {
+      const signal = state.situace.signal;
+      const demanded = effectiveDemand(signal, s, rng);
+      const out = [];
+      for (const plan of state.situace.commitPlan) {
+        const ruka = run.getHand(plan.hrac_id).slice();
+        const skore = (k) => commitScore(k, demanded, s);
+        ruka.sort((a, b) => skore(b) - skore(a));
+        for (let i = 0; i < plan.pocet; i++) out.push({ characterId: plan.hrac_id, cardId: ruka[i].id });
+      }
+      run.commitCards(out);
     },
-    chooseVoice(state) {
-      return defaultVoice(state);
+
+    /* -------- přiřazení do slotů -------- */
+    assign(state, run) {
+      const sloty = state.situace.odhaleno.sloty;
+      const karty = state.situace.committed.map((c) => c.karta);
+      const postizen = state.postavy.some((p) => p.postihy.some((x) => x.efekt?.druh === 'hide_staty'));
+      let mapping;
+      if (postizen && rng.next() < s.epsilon) {
+        mapping = randomMapping(karty.length, sloty.length, rng);
+      } else {
+        mapping = chooseAssignment(s.assign, karty, sloty, state, rng);
+      }
+      const list = mapping.map((slotIdx, cardIdx) => ({ slotIndex: sloty[slotIdx].slot_index, cardId: karty[cardIdx].id }));
+      run.assignToSlots(list);
+      run.confirmNode();
     },
   };
 }
 
-/** tag-spam:<tag> — hraje jediný tag, fallback greedy, cesty dle afinity tagu. */
-function tagSpamStrategy(rng, uzelById, tag) {
-  const greedy = greedyStrategy(rng, uzelById, { heatAverse: false });
-  return {
-    nazev: `tag-spam:${tag}`,
-    chooseRoute(state) {
-      const kandidati = state.nabidka.nabidka.map((id) => ({
-        id,
-        skore: uzelById.get(id).afinity[tag] ?? 0,
-      }));
-      kandidati.sort((a, b) => b.skore - a.skore);
-      return kandidati[0].id;
-    },
-    choosePlay(state, legal, postava) {
-      const tagove = legal.filter((v) => v.karta.tag === tag);
-      if (tagove.length === 0) return greedy.choosePlay(state, legal, postava);
-      let best = tagove[0];
-      for (const volba of tagove) {
-        const eff = effectiveStrength(volba.karta, state.setkani.druh, state.pronasledovatel.id);
-        const bestEff = effectiveStrength(best.karta, state.setkani.druh, state.pronasledovatel.id);
-        if (eff > bestEff) best = volba;
-      }
-      return best.karta.id;
-    },
-    chooseRider(state, pending) {
-      return defaultRider(state, pending, { heatAverse: false });
-    },
-    chooseVoice(state) {
-      return defaultVoice(state);
-    },
+/* ================= commit heuristiky ================= */
+
+function statSum(k) {
+  return Object.values(k.staty).reduce((a, b) => a + b, 0);
+}
+
+/** Efektivní poptávka statů z telegrafu (fidelita p → občas špatný signál). */
+function effectiveDemand(signal, s, rng) {
+  const staty = ['utok', 'obrana', 'hodnota', 'improvizace', 'nastroj'];
+  if (s.commit === 'monokultura') return [s.monoStat];
+  if (s.commit === 'naivni') return [];
+  // informovany: trend viditelných statů, zašuměný fidelitou
+  const trend = signal.trend.flatMap((t) => (Array.isArray(t.stat) ? t.stat : [t.stat]));
+  if (rng.next() < s.fidelita) return trend;
+  return [staty[rng.int(staty.length)]]; // špatný odhad
+}
+
+function commitScore(k, demanded, s) {
+  if (s.commit === 'naivni') return statSum(k);
+  if (demanded.length === 0) return statSum(k);
+  return demanded.reduce((a, stat) => a + (k.staty[stat] ?? 0), 0);
+}
+
+/* ================= přiřazovací heuristiky ================= */
+
+/** Všechny permutace [0..n-1] (n ≤ 4). */
+function permutace(n) {
+  const arr = Array.from({ length: n }, (_, i) => i);
+  const out = [];
+  const gen = (k, a) => {
+    if (k === 1) return out.push(a.slice());
+    for (let i = 0; i < k; i++) {
+      gen(k - 1, a);
+      const j = k % 2 === 0 ? i : 0;
+      [a[j], a[k - 1]] = [a[k - 1], a[j]];
+    }
   };
+  gen(n, arr);
+  return out;
+}
+
+/** mapping[indexKarty] = pozice slotu; karty jdou na náhodný podmnožinový výběr slotů. */
+function randomMapping(pocetKaret, pocetSlotu, rng) {
+  return rng.shuffle(Array.from({ length: pocetSlotu }, (_, i) => i)).slice(0, pocetKaret);
+}
+
+/**
+ * Vrací pole `mapping[indexKarty] = pozice slotu` (délky = počet karet), tj. která
+ * committnutá karta jde do kterého slotu. Volí dle strategie.
+ */
+function chooseAssignment(strat, karty, sloty, state, rng) {
+  const rusi = state.pronasledovatel?.rusi ?? null;
+  const M = karty.length;
+
+  if (strat === 'random') return randomMapping(M, sloty.length, rng);
+
+  // Skórovací funkce nad (karta, slot). GANGSTER pravidlo je veřejné (telegraf).
+  const stitekParams = state.situace.stitekParams ?? null;
+  const typSituace = state.situace.typ;
+  const passVsPrah = (k, slot) => (resolveSlot({ karta: k, slot, rusi, stitekParams, typSituace }).zasah ? 1 : 0);
+  const passVsKotva = (k, slot) => (resolveSlot({ karta: k, slot: { ...slot, prah: slot.kotva }, rusi, stitekParams, typSituace }).zasah ? 1 : 0);
+  const rawStat = (k, slot) => {
+    const staty = Array.isArray(slot.stat) ? slot.stat : [slot.stat];
+    return Math.min(...staty.map((st) => (rusi?.typ === 'stat' && rusi.cil === st ? 0 : k.staty[st] ?? 0)));
+  };
+
+  const scoreFn =
+    strat === 'oracle' ? passVsPrah : strat === 'memorizacni' ? passVsKotva : rawStat; // kompetentni/greedy/cile → staty
+
+  if (strat === 'greedy') {
+    // pro každou kartu popořadě vyber zbylý slot s nejvyšším statem karty
+    const zbyleSloty = sloty.map((_, i) => i);
+    const mapping = new Array(M);
+    for (let cardIdx = 0; cardIdx < M; cardIdx++) {
+      let best = 0;
+      for (let j = 1; j < zbyleSloty.length; j++) {
+        if (rawStat(karty[cardIdx], sloty[zbyleSloty[j]]) > rawStat(karty[cardIdx], sloty[zbyleSloty[best]])) best = j;
+      }
+      mapping[cardIdx] = zbyleSloty.splice(best, 1)[0];
+    }
+    return mapping;
+  }
+
+  // oracle/memorizacni/kompetentni/cile → brute-force maximalizace Σ scoreFn
+  let bestMap = null;
+  let bestScore = -Infinity;
+  for (const perm of permutace(sloty.length)) {
+    let sc = 0;
+    for (let i = 0; i < M; i++) sc += scoreFn(karty[i], sloty[perm[i]]);
+    if (sc > bestScore) {
+      bestScore = sc;
+      bestMap = perm.slice(0, M); // mapping[indexKarty] = pozice slotu
+    }
+  }
+  return bestMap;
 }

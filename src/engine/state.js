@@ -1,70 +1,60 @@
 // @ts-check
 /**
- * Stav runu + příkazy (architektura.md §2.2).
+ * Stav runu + slotové příkazy v3 (architektura.md §2.2 v3, ADR-008).
  *
  * API enginu: createRun({seed, content, rules, players, pronasledovatelId?})
- * a příkazy chooseRoute / playCard / chooseVoice / confirmNode / chooseRider.
- * Nic jiného stav nemění. Výstup: read-only snapshot (getState) + append-only
- * událostní log (getEvents). Deterministický: stejný seed + stejná sekvence
- * příkazů = bit-přesně stejný log (ADR-002).
+ * a příkazy chooseRoute / motelChoice / leaveMotel / commitCards / gamble /
+ * assignToSlots / confirmNode / spendCredits. Nic jiného stav nemění. Výstup:
+ * read-only snapshot (getState) + append-only událostní log (getEvents).
+ * Deterministický: stejný seed + stejná sekvence příkazů = bit-přesně stejný
+ * log (ADR-002).
  *
- * Modelová rozhodnutí nad rámec prototyp-mvp.md (dle
- * content/.claude/agent-memory/playtest-facilitator/sim-model-assumptions.md;
- * vlastní odchylky označeny „ENGINE:"):
- * - Sdílený balíček 32 základních karet; ruka 5, po každém setkání doliz na 5.
- *   ENGINE: doliz platí i po vložených setkáních (léčka/konfrontace); prázdný
- *   dobírací balíček se doplní zamícháním odhazu.
- * - Nabídka cest: ENGINE: 2 náhodné RŮZNÉ dosud nenavštívené běžné uzly
- *   (bez omezení na typ); navštívené se v rámci runu neopakují.
- * - Prokletá karta = 1 setkání malusu, pak odhoz; aktivuje se NEJSTARŠÍ
- *   z fronty postavy na začátku setkání (jedna za setkání). Zákaz tagu má
- *   přednost před vynucením (Zbrklost). ENGINE: je-li zákazem zakázaná celá
- *   ruka (a nejsou zoufalé), zákaz se pro volbu karty ignoruje — pravidlo
- *   nesmí hráče vyřadit ze hry. ENGINE: prokletá líznutá hlasem z auta se
- *   řadí do fronty, tj. působí od PŘÍŠTÍHO setkání.
- * - Zoufalé karty: dostupnost řídí `rules.zoufalePolitika` (pool | pool-once |
- *   dealt | loot-node | loot-injury | none, viz rules.js; default pool =
- *   stálý pool dle sim-model-assumptions). Vždy: hratelné s 3+ zraněními,
- *   ignorují postih. ENGINE: zákaz tagu z prokleté platí i na zoufalé;
- *   Zbrklost zoufalou připouští (síla 3 = maximum). ENGINE: u pool-once a
- *   loot-node mizí karta už zahráním (staging); u dealt se rozdává na startu
- *   bez opakování. ENGINE: loot-node líže do poolu jen po dokončeném BĚŽNÉM
- *   slotu (uzel/Zátah); loot-injury vyhodnocuje utrpěná zranění po KAŽDÉM
- *   setkání (i léčce/konfrontaci — spouštěčem je utrpení, ne postup) a
- *   vyřazené postavy už nelížou.
- * - Hlas z auta: `rules.hlasZAutaBonus === 0` ⇒ větev „bonus" je mechanicky
- *   prázdná (příkaz platný, efekt žádný); prokletá větev beze změny.
- * - Léčka (práh 7) a konfrontace (práh 10) jsou VKLÁDANÁ extra setkání
- *   (neubírají slot ze 6 uzlů); Zátah (práh 5) NAHRADÍ obě nabízené cesty,
- *   čili běžný slot zabírá. Prahy jsou hranově spouštěné: vystřelí při
- *   překročení zdola a znovu se nabijí, až když Žár klesne pod práh (jediná
- *   cesta dolů je přežitá konfrontace → Žár 3).
- * - ENGINE: pořadí po setkání: konfrontace (práh 10) má přednost před léčkou
- *   (práh 7) — čekající léčka i Zátah se startem konfrontace ruší (situace se
- *   změnila; po přežití je Žár 3, tedy pod oběma prahy).
- * - ENGINE: vložená setkání spuštěná během 6. uzlu se vyhodnotí PŘED razítkem
- *   DORUČENO (Žár tým dožene i v cílové rovince).
- * - ENGINE: postavy jednají v pořadí u stolu (seat order); ztráta beden a Žár
- *   se propisují průběžně, 0 beden ukončuje run okamžitě (zbylé hody
- *   propadají). Kolabující (4.) zranění už prokletou nelíže.
- * - ENGINE: postavy nejsou v obsahu v0.1 (chybí obsah/postavy.yaml) — jména
- *   dodává volající přes `players`.
+ * Tok jednoho backbone kroku: [motel odbočka] → volba cesty (map_move) →
+ * commit 4 karet naslepo (commit) → odhalení (situation_revealed) →
+ * [gamble] → přiřazení do slotů (assignment) → resoluce (slot_resolved×4,
+ * band_resolved) → důsledky (zar_move / credit_flow / penalty_*) → další.
+ *
+ * Modelová rozhodnutí nad rámec prototyp-mvp.md (ENGINE:):
+ * - Backbone `uzluNaRun` stopů; truhla je pevný krok (nejde vyroutovat kolem
+ *   masa), motel je binární odbočka (mid+late). Vložená setkání (léčka,
+ *   konfrontace) i Zátah dostávají vlastní `nodeIndex` (unikátní seq situace),
+ *   ale jen backbone a Zátah posouvají `completedNodes` k dojezdu.
+ * - Ruce se po každé situaci doplňují na velikost dle počtu hráčů minus
+ *   aktivní `ruka_minus`. Sdílený balík, odhaz, reshuffle. Loot (4/4) = 1 karta
+ *   navíc prvnímu aktivnímu hráči.
+ * - Postih se přiřadí hráči s PRVNÍM propadlým slotem situace. Cap 2: přidání
+ *   3. aktivního postihu → „složení" (kolo–dvě), které maže LEHKÉ postihy;
+ *   těžké přetrvávají a léčí se jen v motelu.
+ * - Konfrontace v pásmu PRŮŠVIH = prohra (konfrontace_prohra); jinak přežití
+ *   srazí Žár na `poPrezitiKonfrontace`.
  */
 
 import { createRng } from './rng.js';
-import { CURSED_EFFECTS } from './rules.js';
-import { ENCOUNTER_KINDS, noisyHeat, resolveCheck, failureRider } from './resolve.js';
-import { EVENT, CRATE_LOSS_REASON, createLog, scoreGoals } from './events.js';
+import {
+  ENCOUNTER_KINDS,
+  revealSlots,
+  resolveSlot,
+  bandFromHits,
+  maxAchievableZasahy,
+  deriveTelegrafSignal,
+} from './resolve.js';
+import {
+  EVENT,
+  BAND,
+  ZAR_DUVOD,
+  CREDIT_DUVOD,
+  END_PRICINA,
+  createLog,
+  scoreGoals,
+} from './events.js';
 
 /**
  * @param {object} opts
  * @param {number} opts.seed
- * @param {{karty: object[], uzly: object[], cile: object[],
- *   pronasledovatele: object[], verze: string}} opts.content výstup parseContent()
+ * @param {object} opts.content výstup parseContent() (v3 schémata)
  * @param {typeof import('./rules.js').RULES} opts.rules
  * @param {{id: string, jmeno?: string}[]} opts.players 1–4 postavy
- * @param {string} [opts.pronasledovatelId] vynucený pronásledovatel (simulátor);
- *   bez něj se losuje z RNG
+ * @param {string} [opts.pronasledovatelId] vynucený pronásledovatel (jinak los)
  */
 export function createRun({ seed, content, rules, players, pronasledovatelId }) {
   if (!Array.isArray(players) || players.length < 1 || players.length > 4) {
@@ -72,109 +62,29 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
   }
   const rng = createRng(seed);
   const log = createLog();
+  const handConfig = rules.ruce[players.length];
 
   /* --- obsah --- */
-  const zakladni = content.karty.filter((k) => k.typ === 'zakladni');
-  const proklete = content.karty.filter((k) => k.typ === 'prokleta');
-  const zoufale = content.karty.filter((k) => k.typ === 'zoufala');
-  const bezneUzly = content.uzly.filter((u) => !u.specialni);
-  const zatahUzel = content.uzly.find((u) => u.specialni === 'zatah');
+  const masoPool = content.situace.filter((s) => s.typ === 'npc' || s.typ === 'lokace');
+  const zatahSituace = content.situace.find((s) => s.typ === 'zatah');
+  const truhly = content.mista.filter((m) => m.typ === 'truhla');
+  const motely = content.mista.filter((m) => m.typ === 'motel');
+  const gangsterParams = content.stitky.find((s) => s.id === 'GANGSTER')?.parametry ?? null;
 
-  /* --- pronásledovatel (los 1 na startu) --- */
+  /* --- pronásledovatel --- */
   const pursuer = pronasledovatelId
     ? content.pronasledovatele.find((p) => p.id === pronasledovatelId)
     : rng.pick(content.pronasledovatele);
   if (!pursuer) throw new Error(`createRun: pronásledovatel „${pronasledovatelId}" v obsahu není.`);
+  const rusi = pursuer.rusi ? { typ: pursuer.rusi.typ, cil: pursuer.rusi.cil } : null;
+  const brodyGangster = rusi && rusi.typ === 'stitek' && rusi.cil === 'GANGSTER';
+  const gangsterZarBase = gangsterParams?.hlucnost_zar ?? rules.zar.zaGangster;
 
-  /* --- balíčky --- */
-  let drawPile = rng.shuffle(zakladni);
+  /* --- balík --- */
+  let drawPile = rng.shuffle(content.veci);
   /** @type {object[]} */
   let discardPile = [];
-  let cursedDraw = rng.shuffle(proklete);
-  /** @type {object[]} */
-  let cursedDiscard = [];
-
-  /* --- postavy --- */
-  const characters = players.map((p) => ({
-    id: p.id,
-    jmeno: p.jmeno ?? p.id,
-    zraneni: 0,
-    vyrazena: false,
-    /** @type {object[]} */ ruka: [],
-    /** @type {object[]} */ prokleteFronta: [],
-    /** @type {object|null} */ aktivniProkleta: null,
-    /** @type {object|null} */ cil: null,
-    /** @type {object|null} */ zoufalaVRuce: null,
-  }));
-  for (const c of characters) {
-    for (let i = 0; i < rules.velikostRuky; i++) c.ruka.push(drawBasic());
-  }
-
-  /* --- tajné cíle (1 na hráče, bez opakování) --- */
-  const goalDeck = rng.shuffle(content.cile);
-  characters.forEach((c, i) => {
-    c.cil = goalDeck[i] ?? null;
-  });
-
-  /* --- zoufalé karty dle politiky (rules.zoufalePolitika, ADR-003) --- */
-  const zoufalePolitika = rules.zoufalePolitika ?? 'pool';
-  /** Sdílený pool (pool: stálý; pool-once a loot-node: zahraná karta mizí). */
-  let zoufalyPool =
-    zoufalePolitika === 'pool' || zoufalePolitika === 'pool-once' ? zoufale.slice() : [];
-  /** Zásoba pro loot politiky (předmíchaná, líže se z konce). */
-  /** @type {object[]} */
-  let zoufalaZasoba = [];
-  if (zoufalePolitika === 'dealt') {
-    // RNG se čerpá JEN u ne-defaultních politik — 'pool' drží golden runy beze změny.
-    const rozdane = rng.shuffle(zoufale);
-    characters.forEach((c, i) => {
-      c.zoufalaVRuce = rozdane.length > 0 ? rozdane[i % rozdane.length] : null;
-    });
-  } else if (zoufalePolitika === 'loot-node' || zoufalePolitika === 'loot-injury') {
-    zoufalaZasoba = rng.shuffle(zoufale);
-  }
-
-  /* --- průběh runu --- */
-  let heat = 0;
-  let crates = rules.bedenNaStartu;
-  let completedNodes = 0;
-  /** @type {Set<string>} */
-  const visited = new Set();
-  /** @type {Set<string>} */
-  const firedThresholds = new Set();
-  let zatahPending = false;
-  let ambushPending = false;
-  let confrontationPending = false;
-
-  /** @type {'route'|'play'|'rider'|'ended'} */
-  let phase = 'route';
-  /** @type {{nabidka: string[], zatah: boolean}|null} */
-  let offered = null;
-  /** @type {object|null} */
-  let encounter = null;
-  /** @type {object|null} */
-  let pendingRider = null;
-  let runOver = false;
-  /** @type {{vysledek: string, pricina: string}|null} */
-  let endCause = null;
-  /** @type {object|null} */
-  let result = null;
-  let currentNodeIndex = 0;
-
-  log.append(EVENT.RUN_STARTED, 0, {
-    seed,
-    verzeObsahu: content.verze,
-    verzePravidel: rules.verze,
-    pronasledovatel: pursuer.id,
-    postavy: characters.map((c) => c.id),
-    cile: characters.map((c) => ({ postava: c.id, cil: c.cil?.id ?? null })),
-  });
-
-  offerRoutes();
-
-  /* ================= interní pomocníci ================= */
-
-  function drawBasic() {
+  function drawCard() {
     if (drawPile.length === 0 && discardPile.length > 0) {
       drawPile = rng.shuffle(discardPile);
       discardPile = [];
@@ -182,76 +92,311 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
     return drawPile.pop() ?? null;
   }
 
-  /** @param {ReturnType<typeof characters[number]>} c */
-  function drawCursed(c) {
-    if (cursedDraw.length === 0 && cursedDiscard.length > 0) {
-      cursedDraw = rng.shuffle(cursedDiscard);
-      cursedDiscard = [];
+  /* --- postavy --- */
+  const characters = players.map((p) => ({
+    id: p.id,
+    jmeno: p.jmeno ?? p.id,
+    /** @type {object[]} */ ruka: [],
+    /** @type {{id:string, tier:string, efekt:object, zbyva:number|null, kategorie:string}[]} */
+    postihy: [],
+    slozena: false,
+    kolDoNavratu: 0,
+    /** @type {object|null} */ cil: null,
+  }));
+  const goalDeck = rng.shuffle(content.cile);
+  characters.forEach((c, i) => {
+    c.cil = goalDeck[i] ?? null;
+    const potreba = handConfig.ruka;
+    for (let k = 0; k < potreba; k++) {
+      const karta = drawCard();
+      if (karta) c.ruka.push(karta);
     }
-    const karta = cursedDraw.pop();
-    if (!karta) return; // všech 8 prokletých je právě rozebráno — líznutí propadá
-    c.prokleteFronta.push(karta);
-    log.append(EVENT.CURSED_DRAWN, currentNodeIndex, {
-      postava: c.id,
-      pocetZraneni: c.zraneni,
-      karta: karta.id,
+  });
+
+  /* --- průběh --- */
+  let credits = rules.kredity.startovni;
+  let crates = rules.bedenNaStartu;
+  let heat = 0;
+  let completedNodes = 0;
+  let nodeSeq = 0;
+  let drzitelMapyIdx = 0;
+  /** @type {Set<string>} */ const visited = new Set();
+  /** @type {Set<string>} */ const firedThresholds = new Set();
+  /** @type {Set<number>} */ const offeredMotel = new Set();
+  let zatahPending = false;
+  let ambushPending = false;
+  let confrontationPending = false;
+
+  /** @type {'map'|'motel_offer'|'motel'|'commit'|'assign'|'confirm'|'ended'} */
+  let phase = 'map';
+  /** @type {object|null} */ let offered = null;
+  /** @type {object|null} */ let situ = null; // aktuální situace v běhu
+  let runOver = false;
+  /** @type {{vysledek:string, pricina:string}|null} */ let endCause = null;
+  /** @type {object|null} */ let result = null;
+
+  log.append(EVENT.RUN_STARTED, 0, {
+    seed,
+    verzeObsahu: content.verze,
+    verzePravidel: rules.verze,
+    pronasledovatel: pursuer.id,
+    rusi,
+    pocetHracu: players.length,
+    ruce: characters.map((c) => ({ hrac_id: c.id, velikost: c.ruka.length, karty: c.ruka.map((k) => k.id) })),
+    loadout: characters.map(() => []), // MVP []
+    startBeden: crates,
+    startZar: heat,
+    startKreditu: credits,
+    cile: characters.map((c) => ({ hrac_id: c.id, cil: c.cil?.id ?? null })),
+  });
+
+  nextStep();
+
+  /* ================= mapa a odbočky ================= */
+
+  function nextStep() {
+    if (runOver) return endRun(endCause);
+    if (completedNodes >= rules.uzluNaRun) {
+      return endRun({ vysledek: 'DORUCENO', pricina: END_PRICINA.DOJEZD });
+    }
+    const krok = completedNodes + 1;
+    if (!zatahPending && rules.map.motelKroky.includes(krok) && !offeredMotel.has(krok) && motely.length > 0) {
+      offeredMotel.add(krok);
+      phase = 'motel_offer';
+      offered = { motel: rng.pick(motely).id };
+      return;
+    }
+    offerRoutes(krok);
+  }
+
+  function offerRoutes(krok) {
+    nodeSeq += 1;
+    if (zatahPending && zatahSituace) {
+      zatahPending = false;
+      offered = { nabidnuto: [{ ref: zatahSituace.id, typ_mista: 'zatah' }], zatah: true };
+    } else if (krok === rules.map.truhlaKrok && truhly.length > 0) {
+      const vyber = rng.shuffle(truhly).slice(0, Math.min(2, truhly.length));
+      offered = { nabidnuto: vyber.map((t) => ({ ref: t.id, typ_mista: 'truhla' })), zatah: false };
+    } else {
+      const pool = masoPool.filter((s) => !visited.has(s.id));
+      const vyber = rng.shuffle(pool).slice(0, Math.min(2, pool.length));
+      offered = { nabidnuto: vyber.map((s) => ({ ref: s.id, typ_mista: s.typ })), zatah: false };
+    }
+    phase = 'map';
+    log.append(EVENT.MAP_MOVE, nodeSeq, {
+      nabidnuto: offered.nabidnuto,
+      byl_zatah: Boolean(offered.zatah),
     });
   }
 
-  /** Přičte zranění; vrací 1, pokud se zranění skutečně zapsalo. */
-  function addInjury(c) {
-    if (runOver || c.vyrazena) return 0;
-    c.zraneni += 1;
-    log.append(EVENT.INJURY_ADDED, currentNodeIndex, { postava: c.id, pocetZraneni: c.zraneni });
-    if (c.zraneni >= rules.kolapsPriZraneni) {
-      c.vyrazena = true;
-      log.append(EVENT.CHARACTER_DOWN, currentNodeIndex, { postava: c.id, pocetZraneni: c.zraneni });
-      if (characters.every((x) => x.vyrazena)) {
-        runOver = true;
-        endCause = { vysledek: 'NEVYRESENO', pricina: 'vsichni_vyrazeni' };
+  /* ================= situace ================= */
+
+  function startSituation(def, kind, typMista) {
+    const commitPlan = buildCommitPlan();
+    situ = {
+      def,
+      kind,
+      typ: def.typ,
+      typMista,
+      /** @type {{hrac_id:string, pocet:number}[]} */ commitPlan,
+      /** @type {object[]} */ committed: [],
+      /** @type {object[]|null} */ odhaleno: null,
+      /** @type {object[]|null} */ assignment: null,
+      gambleUsed: false,
+      signal: deriveTelegrafSignal(def.sloty, gangsterParams, def.typ),
+    };
+    const nevidi = characters.filter((c) => hasEfekt(c, 'hide_telegraf')).map((c) => c.id);
+    log.append(EVENT.TELEGRAF_DERIVED, nodeSeq, {
+      signal_pravy: situ.signal,
+      signal_vyslany: situ.signal, // fidelita p = sim knob (bot zašumí), engine derivuje pravdu
+      nevidi,
+    });
+    // Nikdo aktivní (všichni složení) → situace se auto-vyhodnotí (samé auto-faily).
+    if (commitPlan.length === 0) {
+      situ.odhaleno = revealSlots(situ.def, rng, rules);
+      logSituationRevealed();
+      situ.assignment = [];
+      phase = 'confirm';
+      return resolveSituation();
+    }
+    phase = 'commit';
+  }
+
+  /**
+   * Kvóta commitu per SEDÍCÍ postava (dle počtu hráčů); u 3p držitel mapy 2.
+   * @returns {Map<string, number>}
+   */
+  function seatQuota() {
+    const commit = handConfig.commit;
+    const q = new Map();
+    if (players.length === 3) {
+      q.set(characters[drzitelMapyIdx].id, commit[0]);
+      let k = 1;
+      for (const c of characters) if (c.id !== characters[drzitelMapyIdx].id) q.set(c.id, commit[k++]);
+    } else {
+      characters.forEach((c, i) => q.set(c.id, commit[i]));
+    }
+    return q;
+  }
+
+  /** Commit plan jen za AKTIVNÍ (nesložené) postavy — složení = méně committnutých karet. */
+  function buildCommitPlan() {
+    const q = seatQuota();
+    return characters
+      .filter((c) => !c.slozena)
+      .map((c) => ({ hrac_id: c.id, pocet: q.get(c.id) ?? 0 }))
+      .filter((p) => p.pocet > 0);
+  }
+
+  function logSituationRevealed() {
+    log.append(EVENT.SITUATION_REVEALED, nodeSeq, {
+      typ_mista: situ.typMista,
+      sloty: situ.odhaleno.map((s) => ({
+        slot_index: s.slot_index,
+        role: s.role,
+        stat: s.stat,
+        kotva: s.kotva,
+        sum: s.sum,
+        prah: s.prah,
+        typ_prahu: s.typ_prahu,
+        viditelnost: s.viditelnost,
+        stitek_citlivy: s.stitek_citlivy,
+      })),
+    });
+  }
+
+  /* ================= postihy ================= */
+
+  function hasEfekt(c, druh) {
+    return c.postihy.some((p) => p.efekt?.druh === druh);
+  }
+  function rukaMinus(c) {
+    return c.postihy.filter((p) => p.efekt?.druh === 'ruka_minus').reduce((a, p) => a + (p.efekt.kolik ?? 1), 0);
+  }
+  function effectiveHand(c) {
+    return Math.max(0, handConfig.ruka - rukaMinus(c));
+  }
+
+  /** @param {object} c @param {string} postihId @param {string} pricina */
+  function addPenalty(c, postihId, pricina) {
+    if (c.slozena) return;
+    const def = content.postihy.find((p) => p.id === postihId);
+    if (!def) return;
+    // Okamžité (ihned) ztrátové efekty — aplikují se hned, do fronty nejdou.
+    if (def.trvani === 'ihned') {
+      applyImmediate(c, def, pricina);
+      log.append(EVENT.PENALTY_ADDED, nodeSeq, penaltyPayload(c, def, pricina, 0));
+      return;
+    }
+    if (def.efekt?.druh === 'ztrata_naklad' || def.efekt?.druh === 'ztrata_kreditu' || def.efekt?.druh === 'ztrata_karty') {
+      applyImmediate(c, def, pricina);
+    }
+    const zbyva = def.tier === 'tezky' ? null : def.trvani;
+    c.postihy.push({ id: def.id, tier: def.tier, kategorie: def.typ, efekt: def.efekt, zbyva });
+    log.append(EVENT.PENALTY_ADDED, nodeSeq, penaltyPayload(c, def, pricina, c.postihy.length));
+    if (c.postihy.length > rules.postihy.capNaHrace) foldCharacter(c);
+  }
+
+  function penaltyPayload(c, def, pricina, aktivnich) {
+    return {
+      hrac_id: c.id,
+      postih_id: def.id,
+      kategorie: def.typ,
+      tier: def.tier,
+      efekt: def.efekt,
+      vyprsi_za: def.tier === 'tezky' ? null : def.trvani,
+      pricina,
+      aktivnich_po: aktivnich,
+    };
+  }
+
+  function applyImmediate(c, def, pricina) {
+    const e = def.efekt;
+    if (e.druh === 'ztrata_kreditu') changeCredits(-(e.kolik ?? 1), CREDIT_DUVOD.ZTRATOVY_POSTIH);
+    else if (e.druh === 'ztrata_naklad') loseCrates(e.kolik ?? 1);
+    else if (e.druh === 'ztrata_karty') {
+      for (let i = 0; i < (e.kolik ?? 1) && c.ruka.length > 0; i++) discardPile.push(c.ruka.pop());
+    }
+    void pricina;
+  }
+
+  function foldCharacter(c) {
+    const smazane = c.postihy.filter((p) => p.tier === 'lehky').map((p) => p.id);
+    const tezke = c.postihy.filter((p) => p.tier === 'tezky');
+    c.postihy = tezke; // složení maže jen lehké
+    c.slozena = true;
+    c.kolDoNavratu = rules.postihy.slozeniKolMin + rng.int(rules.postihy.slozeniKolMax - rules.postihy.slozeniKolMin + 1);
+    log.append(EVENT.CHARACTER_FOLDED, nodeSeq, {
+      hrac_id: c.id,
+      kolo_od: nodeSeq,
+      smazane_lehke: smazane,
+      pretrvavaji_tezke: tezke.map((p) => p.id),
+    });
+  }
+
+  /** Po každé situaci: odečti trvání lehkých, vrať složené. */
+  function tickPenalties() {
+    for (const c of characters) {
+      const vyprsele = [];
+      for (const p of c.postihy) {
+        if (p.zbyva != null) {
+          p.zbyva -= 1;
+          if (p.zbyva <= 0) vyprsele.push(p);
+        }
       }
-    } else if (c.zraneni >= rules.prokletaOdZraneni) {
-      drawCursed(c);
+      if (vyprsele.length > 0) {
+        c.postihy = c.postihy.filter((p) => !vyprsele.includes(p));
+        for (const p of vyprsele) {
+          log.append(EVENT.PENALTY_EXPIRED, nodeSeq, { hrac_id: c.id, postih_id: p.id, duvod: 'cas' });
+        }
+      }
+      if (c.slozena) {
+        c.kolDoNavratu -= 1;
+        if (c.kolDoNavratu <= 0) {
+          c.slozena = false;
+          log.append(EVENT.CHARACTER_RETURNED, nodeSeq, { hrac_id: c.id });
+        }
+      }
     }
-    return 1;
   }
 
-  /** @param {string} duvod @param {{id: string}} atribuce čí hod/rider bednu shodil */
-  function loseCrate(duvod, atribuce) {
-    if (runOver) return 0;
-    crates -= 1;
-    log.append(EVENT.CRATE_LOST, currentNodeIndex, {
-      duvod,
-      postava: atribuce.id,
-      zbyvaBeden: crates,
-    });
+  /* ================= zdroje ================= */
+
+  function changeCredits(delta, duvod) {
+    if (delta === 0) return;
+    credits = Math.max(0, credits + delta);
+    log.append(EVENT.CREDIT_FLOW, nodeSeq, { delta, duvod, zustatek: credits });
+  }
+
+  function loseCrates(kolik) {
+    if (runOver || kolik <= 0) return 0;
+    const skutecne = Math.min(kolik, crates);
+    crates -= skutecne;
     if (crates <= 0) {
       runOver = true;
-      endCause = { vysledek: 'NEVYRESENO', pricina: 'dosly_bedny' };
+      endCause = { vysledek: 'NEVYRESENO', pricina: END_PRICINA.BEDNY_0 };
     }
-    return 1;
+    return skutecne;
   }
 
-  /** @param {number} delta @param {string} duvod */
-  function changeHeat(delta, duvod) {
+  function changeHeat(delta, duvod, prahPole) {
     if (runOver || delta === 0) return;
     const old = heat;
     heat = Math.max(0, Math.min(rules.zar.max, heat + delta));
     if (heat === old) return;
-    log.append(EVENT.HEAT_CHANGED, currentNodeIndex, {
+    log.append(EVENT.ZAR_MOVE, nodeSeq, {
       delta: heat - old,
       duvod,
-      novaHodnota: heat,
+      nova_pozice: heat,
+      prah_prekrocen: prahPole ?? null,
     });
     updateThresholds();
   }
 
-  /** Hranové spouštění prahů; pod prahem se práh znovu nabije. */
   function updateThresholds() {
     for (const [nazev, prah] of Object.entries(rules.zar.prahy)) {
       if (heat >= prah && !firedThresholds.has(nazev)) {
         firedThresholds.add(nazev);
-        log.append(EVENT.HEAT_THRESHOLD, currentNodeIndex, { prah });
         if (nazev === 'zatah') zatahPending = true;
         else if (nazev === 'lecka') ambushPending = true;
         else if (nazev === 'konfrontace') confrontationPending = true;
@@ -261,527 +406,415 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
     }
   }
 
-  function offerRoutes() {
-    currentNodeIndex = completedNodes + 1;
-    if (zatahPending && zatahUzel) {
-      zatahPending = false;
-      offered = { nabidka: [zatahUzel.id], zatah: true };
-    } else {
-      const pool = bezneUzly.filter((u) => !visited.has(u.id));
-      const vyber = rng.shuffle(pool).slice(0, rules.nabidkaCest);
-      offered = { nabidka: vyber.map((u) => u.id), zatah: false };
-    }
-    phase = 'route';
-    log.append(EVENT.ROUTE_OFFERED, currentNodeIndex, {
-      nabidnuto: offered.nabidka,
-      zatah: offered.zatah,
-    });
-  }
+  /* ================= resoluce situace ================= */
 
-  /**
-   * @param {string} druh hodnota z ENCOUNTER_KINDS
-   * @param {object} uzel definice uzlu/mini-uzlu {id, nazev?, uvod, afinity, tvrdost}
-   */
-  function startEncounter(druh, uzel) {
-    currentNodeIndex =
-      druh === ENCOUNTER_KINDS.UZEL || druh === ENCOUNTER_KINDS.ZATAH
-        ? completedNodes + 1
-        : completedNodes;
-    const aktivni = characters.filter((c) => !c.vyrazena);
-    // Aktivace nejstarší prokleté z fronty (jedna za setkání).
-    for (const c of aktivni) {
-      c.aktivniProkleta = c.prokleteFronta.length > 0 ? c.prokleteFronta.shift() : null;
-    }
-    encounter = {
-      druh,
-      uzel,
-      poradi: aktivni.map((c) => c.id),
-      /** @type {Map<string, object>} */ zahrane: new Map(),
-      /** @type {Map<string, object>} */ hlasy: new Map(),
-      hlasujici: characters.filter((c) => c.vyrazena).map((c) => c.id),
-      /** @type {Map<string, number>} */ bonusy: new Map(),
-      resolveIdx: 0,
-      /** @type {object[]} */ hody: [],
-      selhaniVUzlu: false,
-      /** @type {object|null} */ cekajiciHod: null,
-    };
-    phase = 'play';
-  }
+  function resolveSituation() {
+    const sloty = situ.odhaleno;
+    const assignByCard = new Map(situ.assignment.map((a) => [a.karta_id, a]));
+    const kartaById = new Map(situ.committed.map((c) => [c.karta.id, c.karta]));
+    /** @type {{hrac_id:string, zasah:boolean}[]} */ const vysledky = [];
+    let zasahy = 0;
 
-  /** @param {string} postavaId */
-  function findCharacter(postavaId) {
-    const c = characters.find((x) => x.id === postavaId);
-    if (!c) throw new Error(`Neznámá postava „${postavaId}".`);
-    return c;
-  }
-
-  /**
-   * Legální zahrání pro postavu v aktuálním setkání (i pro UI).
-   * @param {string} postavaId
-   * @returns {{karta: object, zoufala: boolean, dobrovolna: boolean}[]}
-   */
-  function legalPlays(postavaId) {
-    const c = findCharacter(postavaId);
-    if (phase !== 'play' || c.vyrazena || !encounter) return [];
-    const efekt = c.aktivniProkleta ? CURSED_EFFECTS[c.aktivniProkleta.id] ?? {} : {};
-    const zakaz = efekt.zakazTag ?? null;
-    const zbrklost = Boolean(efekt.nejvyssiSila);
-
-    let ruka = c.ruka.filter((k) => k.tag !== zakaz);
-    let zoufaleVolby = [];
-    if (c.zraneni >= rules.zoufalaOdZraneni) {
-      const osobni = zoufalePolitika === 'dealt' || zoufalePolitika === 'loot-injury';
-      const kandidati = osobni ? (c.zoufalaVRuce ? [c.zoufalaVRuce] : []) : zoufalyPool;
-      zoufaleVolby = kandidati.filter((k) => k.tag !== zakaz);
-    }
-    if (ruka.length === 0 && zoufaleVolby.length === 0) {
-      // Zákaz nelze splnit — pravidlo nesmí hráče vyřadit ze hry (viz hlavička).
-      ruka = c.ruka.slice();
-    }
-    if (zbrklost && ruka.length > 0) {
-      const max = Math.max(...ruka.map((k) => k.sila));
-      ruka = ruka.filter((k) => k.sila === max);
-    }
-    return [
-      ...ruka.map((karta) => ({ karta, zoufala: false, dobrovolna: !zbrklost })),
-      ...zoufaleVolby.map((karta) => ({ karta, zoufala: true, dobrovolna: false })),
-    ];
-  }
-
-  /* ================= resoluce setkání ================= */
-
-  function resumeResolution() {
-    const e = encounter;
-    while (!runOver && e.resolveIdx < e.poradi.length) {
-      const c = findCharacter(e.poradi[e.resolveIdx]);
-      const play = e.zahrane.get(c.id);
-
-      if (!e.cekajiciHod) {
-        // Hlučnost: karta, nebo prokletá „Nutkání ochutnat" (počítá se jako hlučná).
-        const efekt = c.aktivniProkleta ? CURSED_EFFECTS[c.aktivniProkleta.id] ?? {} : {};
-        if (play.karta.hlucna || efekt.hlucna) {
-          changeHeat(noisyHeat(pursuer.id, rules), 'hlucna_karta');
-          if (runOver) break;
-        }
-        const modifikatory = (e.bonusy.get(c.id) ?? 0) + (efekt.modHodu ?? 0);
-        const res = resolveCheck(
-          {
-            karta: play.karta,
-            zoufala: play.zoufala,
-            zraneni: c.zraneni,
-            afinita: play.karta.tag ? e.uzel.afinity[play.karta.tag] ?? 0 : 0,
-            modifikatory,
-            druhSetkani: e.druh,
-            pronasledovatelId: pursuer.id,
-          },
-          rules,
-          rng
-        );
-        e.cekajiciHod = { res };
-        if (res.pasmo === 'selhani') {
-          const rider = failureRider(play.karta.tag, crates);
-          if (rider && !(rider.typ === 'utek' && rider.volby.length === 1)) {
-            pendingRider = { postava: c.id, typ: rider.typ, volby: rider.volby };
-            phase = 'rider';
-            return; // pauza — čeká se na příkaz chooseRider
-          }
-          finalizeCheck(c, res, rider ? 'zraneni' : null);
-        } else {
-          finalizeCheck(c, res, null);
-        }
-      } else {
-        // návrat z rider pauzy — volba už je uložená v cekajiciHod.riderVolba
-        finalizeCheck(c, e.cekajiciHod.res, e.cekajiciHod.riderVolba ?? null);
+    for (const slot of sloty) {
+      const a = situ.assignment.find((x) => x.slot_index === slot.slot_index);
+      if (!a) {
+        // Neobsazený slot (méně committnutých karet při složení) → auto-fail.
+        vysledky.push({ hrac_id: null, zasah: false, slot_index: slot.slot_index });
+        log.append(EVENT.SLOT_RESOLVED, nodeSeq, {
+          slot_index: slot.slot_index,
+          karta_id: null,
+          hrac_id: null,
+          stat: slot.stat,
+          stat_hodnota: null,
+          prah: slot.prah,
+          typ_prahu: slot.typ_prahu,
+          viditelnost: slot.viditelnost,
+          stitky: [],
+          stitek_efekt: null,
+          pronasledovatel_efekt: null,
+          zasah: false,
+          duvod: 'neobsazeno',
+        });
+        continue;
       }
-      e.cekajiciHod = null;
-      e.resolveIdx += 1;
+      const karta = kartaById.get(a.karta_id);
+      const r = resolveSlot({ karta, slot, rusi, stitekParams: gangsterParams, typSituace: situ.typ });
+      if (r.zasah) zasahy += 1;
+      vysledky.push({ hrac_id: a.hrac_id, zasah: r.zasah, slot_index: slot.slot_index });
+      log.append(EVENT.SLOT_RESOLVED, nodeSeq, {
+        slot_index: slot.slot_index,
+        karta_id: karta.id,
+        hrac_id: a.hrac_id,
+        stat: slot.stat,
+        stat_hodnota: r.stat_hodnota,
+        prah: slot.prah,
+        typ_prahu: slot.typ_prahu,
+        viditelnost: slot.viditelnost,
+        stitky: karta.stitek ? [karta.stitek] : [],
+        stitek_efekt: r.stitek_efekt,
+        pronasledovatel_efekt: r.pronasledovatel_efekt,
+        zasah: r.zasah,
+        duvod: r.duvod,
+      });
     }
-    finishEncounter();
-  }
+    void assignByCard;
 
-  /**
-   * Aplikace následků jednoho hodu (pásma, ridery, tvrdost) + událost
-   * check_resolved. `riderVolba` je null mimo selhání s riderem.
-   */
-  function finalizeCheck(c, res, riderVolba) {
-    const e = encounter;
-    const play = e.zahrane.get(c.id);
-    let pasmo = res.pasmo;
-    let povyseno = false;
-    let zraneniPridana = 0;
-    let bednyZtraceneTimtoHodem = 0;
-    /** @type {string|null} */
-    let tvrdostAplikovana = null;
-    /** @type {object|null} */
-    let rider = null;
+    const pasmo = bandFromHits(zasahy);
+    // Oracle nad committnutými (doplněnými na 4 „prázdnými" sloty, které vždy padnou).
+    const committedKarty = situ.committed.map((c) => c.karta);
+    while (committedKarty.length < rules.slotu) committedKarty.push(null);
+    const maxZasahy = maxAchievableZasahy(committedKarty, sloty, rusi, gangsterParams, situ.typ);
 
-    if (pasmo === 'uspech_za_cenu') {
-      zraneniPridana += addInjury(c);
-    } else if (pasmo === 'selhani') {
-      if (play.karta.tag === 'uplatek' && riderVolba === 'zaplatit_bednu') {
-        // Rider Úplatku: bedna → povýšení na „úspěch za cenu"; bez tvrdosti,
-        // nepočítá se jako selhání.
-        rider = { typ: 'uplatek', volba: riderVolba };
-        bednyZtraceneTimtoHodem += loseCrate(CRATE_LOSS_REASON.RIDER_UPLATEK, c);
-        pasmo = 'uspech_za_cenu';
-        povyseno = true;
-        zraneniPridana += addInjury(c);
-      } else {
-        e.selhaniVUzlu = true;
-        if (play.karta.tag === 'utek') {
-          // Rider Útěku: vlastník volí zranění, NEBO −1 bedna; tvrdost i tak.
-          rider = { typ: 'utek', volba: riderVolba };
-          if (riderVolba === 'bedna') {
-            bednyZtraceneTimtoHodem += loseCrate(CRATE_LOSS_REASON.RIDER_UTEK, c);
-          } else {
-            zraneniPridana += addInjury(c);
-          }
-        } else {
-          if (play.karta.tag === 'uplatek') rider = { typ: 'uplatek', volba: riderVolba };
-          zraneniPridana += addInjury(c);
-        }
-        if (!runOver) {
-          tvrdostAplikovana = e.uzel.tvrdost;
-          if (tvrdostAplikovana === 'bedna') {
-            bednyZtraceneTimtoHodem += loseCrate(CRATE_LOSS_REASON.TVRDOST_UZLU, c);
-          } else if (tvrdostAplikovana === 'zar') {
-            changeHeat(rules.tvrdostZarPrirustek, 'tvrdost_uzlu');
-          } else if (tvrdostAplikovana === 'zraneni') {
-            zraneniPridana += addInjury(c);
-          }
-        }
-      }
-    }
+    // Náklad: PRŮŠVIH bere bednu.
+    let naklad_ztrata = 0;
+    if (pasmo === BAND.PRUSVIH) naklad_ztrata = loseCrates(rules.nakladPrusvihZtrata);
 
-    log.append(EVENT.CHECK_RESOLVED, currentNodeIndex, {
-      postava: c.id,
-      hod: res.hod,
-      sila: res.sila,
-      afinita: res.afinita,
-      postihZraneni: res.postih,
-      modifikatory: res.modifikatory,
-      soucet: res.soucet,
+    log.append(EVENT.BAND_RESOLVED, nodeSeq, {
+      zasahy,
       pasmo,
-      povysenoZeSelhani: povyseno,
-      tvrdostAplikovana,
-      rider,
+      max_achievable_zasahy: maxZasahy,
+      max_achievable_band: bandFromHits(maxZasahy),
+      gap: maxZasahy - zasahy,
+      naklad_ztrata,
+      zbyva_beden: crates,
     });
 
-    e.hody.push({
-      postava: c.id,
-      karta: {
-        id: play.karta.id,
-        nazev: play.karta.nazev,
-        tag: play.karta.tag ?? null,
-        sila: play.karta.sila,
-        hlucna: Boolean(play.karta.hlucna),
-      },
-      dobrovolna: play.dobrovolna,
-      zoufala: play.zoufala,
-      hod: res.hod,
-      soucet: res.soucet,
-      pasmo,
-      povyseno_ze_selhani: povyseno,
-      rider,
-      tvrdost_aplikovana: tvrdostAplikovana,
-      zraneni_pridana: zraneniPridana,
-      bedny_ztracene_timto_hodem: bednyZtraceneTimtoHodem,
-    });
+    // Žár z hlučného hraní (assignované karty).
+    for (const c of situ.committed) {
+      const k = c.karta;
+      if (k.stitek === 'GANGSTER') {
+        changeHeat(gangsterZarBase * (brodyGangster ? 2 : 1), ZAR_DUVOD.HLUCNE_GANGSTER);
+      } else if ((k.staty.utok ?? 0) >= rules.zar.hlucnyUtokPrah) {
+        changeHeat(rules.zar.zaHlucnyUtok, ZAR_DUVOD.HLUCNE_UTOK);
+      }
+      if (runOver) break;
+    }
+
+    // Pásmová ekonomika + postihy (globální dle prototyp-mvp.md).
+    if (!runOver) applyBandConsequences(pasmo, vysledky);
+
+    // Konfrontace: PRŮŠVIH = prohra; jinak přežití srazí Žár.
+    if (situ.kind === ENCOUNTER_KINDS.KONFRONTACE && !runOver) {
+      if (pasmo === BAND.PRUSVIH) {
+        runOver = true;
+        endCause = { vysledek: 'NEVYRESENO', pricina: END_PRICINA.KONFRONTACE_PROHRA };
+      } else {
+        changeHeat(rules.zar.poPrezitiKonfrontace - heat, ZAR_DUVOD.KONFRONTACE_PREZITA);
+      }
+    }
+
+    finishSituation();
   }
 
-  function finishEncounter() {
-    const e = encounter;
-    pendingRider = null;
-
-    // +1 Žár za uzel s aspoň jedním selháním (max 1× za uzel) + Ztráta důstojnosti.
-    if (!runOver && e.selhaniVUzlu) {
-      changeHeat(rules.zar.zaUzelSeSelhanim, 'selhani_v_uzlu');
-      for (const c of characters) {
-        const efekt = c.aktivniProkleta ? CURSED_EFFECTS[c.aktivniProkleta.id] ?? {} : {};
-        if (efekt.zarNavicPriSelhaniUzlu) {
-          changeHeat(efekt.zarNavicPriSelhaniUzlu, 'ztrata_dustojnosti');
-        }
-      }
+  function applyBandConsequences(pasmo, vysledky) {
+    const propadli = vysledky.filter((v) => !v.zasah && v.hrac_id != null).map((v) => v.hrac_id);
+    const obet = propadli.length > 0 ? findCharacter(propadli[0]) : null;
+    if (pasmo === BAND.LOOT) {
+      changeCredits(rules.kredity.zaHladceLoot, CREDIT_DUVOD.HLADCE_LOOT);
+      const kdo = characters.find((c) => !c.slozena) ?? characters[0];
+      const karta = drawCard();
+      if (karta) kdo.ruka.push(karta);
+    } else if (pasmo === BAND.HLADCE) {
+      changeCredits(rules.kredity.zaHladce, CREDIT_DUVOD.HLADCE);
+    } else if (pasmo === BAND.NASLEDKY) {
+      changeHeat(rules.zar.zaSNasledky, ZAR_DUVOD.SNASLEDKY);
+      if (obet) addPenalty(obet, rng.pick(situ.def.pasmove_vysledky.s_nasledky.postih_lehky), pasmo);
+    } else if (pasmo === BAND.PRUSVIH) {
+      changeHeat(rules.zar.zaPrusvih, ZAR_DUVOD.PRUSVIH);
+      if (obet) addPenalty(obet, rng.pick(situ.def.pasmove_vysledky.prusvih.postih_tezky), pasmo);
     }
+  }
 
-    log.append(EVENT.NODE_RESOLVED, currentNodeIndex, {
-      druh: e.druh,
-      uzel: e.uzel.id,
-      nazev: e.uzel.nazev ?? null,
-      pronasledovatel: pursuer.id,
-      hody: e.hody,
-      selhaniVUzlu: e.selhaniVUzlu,
-      zar: heat,
-      zbyvaBeden: crates,
-      postavy: characters.map((c) => ({
-        id: c.id,
-        zraneni: c.zraneni,
-        vyrazena: c.vyrazena,
-      })),
-    });
-
-    // Odhoz aktivních prokletých a zahraných karet, doliz ruky.
+  function finishSituation() {
+    // Odhoz committnutých + doplnění rukou.
+    for (const c of situ.committed) discardPile.push(c.karta);
+    tickPenalties();
+    if (situ.kind === ENCOUNTER_KINDS.UZEL || situ.kind === ENCOUNTER_KINDS.ZATAH) {
+      completedNodes += 1;
+      visited.add(situ.def.id);
+      if (players.length === 3) drzitelMapyIdx = (drzitelMapyIdx + 1) % 3;
+    }
     for (const c of characters) {
-      if (c.aktivniProkleta) {
-        cursedDiscard.push(c.aktivniProkleta);
-        c.aktivniProkleta = null;
-      }
-    }
-    for (const [postavaId, play] of e.zahrane) {
-      void postavaId;
-      if (!play.zoufala) discardPile.push(play.karta);
-    }
-
-    if (runOver) {
-      endRun(endCause);
-      return;
-    }
-
-    for (const c of characters) {
-      if (c.vyrazena) continue;
-      while (c.ruka.length < rules.velikostRuky) {
-        const karta = drawBasic();
+      if (c.slozena) continue;
+      while (c.ruka.length < effectiveHand(c)) {
+        const karta = drawCard();
         if (!karta) break;
         c.ruka.push(karta);
       }
     }
+    situ = null;
 
-    if (e.druh === ENCOUNTER_KINDS.UZEL || e.druh === ENCOUNTER_KINDS.ZATAH) {
-      completedNodes += 1;
-      visited.add(e.uzel.id);
-      // loot-node: dokončený uzel (běžný slot) = 1 zoufalá ze zásoby do poolu.
-      if (zoufalePolitika === 'loot-node' && zoufalaZasoba.length > 0) {
-        zoufalyPool.push(zoufalaZasoba.pop());
-      }
-    }
+    if (runOver) return endRun(endCause);
 
-    // loot-injury: kdo v tomto setkání utrpěl zranění a má celkem dost,
-    // lízne osobní zoufalou (max 1 v držení; zásoba se nevrací).
-    if (zoufalePolitika === 'loot-injury') {
-      for (const c of characters) {
-        if (c.vyrazena || c.zoufalaVRuce || c.zraneni < rules.lootZoufalaOdZraneni) continue;
-        const utrpelZde = e.hody
-          .filter((h) => h.postava === c.id)
-          .reduce((soucet, h) => soucet + h.zraneni_pridana, 0);
-        if (utrpelZde >= 1 && zoufalaZasoba.length > 0) {
-          c.zoufalaVRuce = zoufalaZasoba.pop();
-        }
-      }
-    }
-
+    // Vložená setkání: konfrontace > léčka; Zátah se řeší až při volbě cesty.
     if (confrontationPending) {
       confrontationPending = false;
       ambushPending = false;
-      zatahPending = false;
-      log.append(EVENT.CONFRONTATION_STARTED, currentNodeIndex, { pronasledovatel: pursuer.id });
-      startEncounter(ENCOUNTER_KINDS.KONFRONTACE, {
-        id: `${pursuer.id}-konfrontace`,
-        nazev: `Konfrontace: ${pursuer.nazev}`,
-        ...pursuer.konfrontace,
-      });
-      return;
+      nodeSeq += 1;
+      return startSituation({ ...pursuer.konfrontace, id: `${pursuer.id}-konfrontace` }, ENCOUNTER_KINDS.KONFRONTACE, 'konfrontace');
     }
     if (ambushPending) {
       ambushPending = false;
-      log.append(EVENT.AMBUSH_INSERTED, currentNodeIndex, { pronasledovatel: pursuer.id });
-      startEncounter(ENCOUNTER_KINDS.LECKA, {
-        id: `${pursuer.id}-lecka`,
-        nazev: `Léčka: ${pursuer.nazev}`,
-        ...pursuer.lecka,
-      });
-      return;
+      nodeSeq += 1;
+      return startSituation({ ...pursuer.lecka, id: `${pursuer.id}-lecka` }, ENCOUNTER_KINDS.LECKA, 'lecka');
     }
-
-    if (e.druh === ENCOUNTER_KINDS.KONFRONTACE) {
-      // Přežití konfrontace → Žár klesá na 3 (prahy se tím znovu nabijí).
-      changeHeat(rules.zar.poPrezitiKonfrontace - heat, 'preziti_konfrontace');
-    }
-
-    if (completedNodes >= rules.uzluNaRun) {
-      endRun({ vysledek: 'DORUCENO', pricina: 'doruceno' });
-      return;
-    }
-    offerRoutes();
+    nextStep();
   }
 
-  /** @param {{vysledek: string, pricina: string}} cause */
+  /* ================= konec ================= */
+
   function endRun(cause) {
     phase = 'ended';
-    encounter = null;
-    pendingRider = null;
-    const prirazeni = characters
-      .filter((c) => c.cil)
-      .map((c) => ({ postavaId: c.id, cil: c.cil }));
+    situ = null;
+    const prirazeni = characters.filter((c) => c.cil).map((c) => ({ postavaId: c.id, cil: c.cil }));
     const cileSkore = scoreGoals(
       [...log.all(), { type: EVENT.RUN_ENDED, vysledek: cause.vysledek }],
       prirazeni
     );
+    for (const s of cileSkore) {
+      log.append(EVENT.GOAL_SCORED, nodeSeq, {
+        hrac_id: s.postava,
+        cil_id: s.cil,
+        overeni_typ: s.textovy ? 'textovy' : 'mechanicky',
+        splnen: s.splnen,
+      });
+    }
     result = {
       vysledek: cause.vysledek,
       pricina: cause.pricina,
-      pocetUzlu: completedNodes,
-      zar: heat,
-      zbyvaBeden: crates,
+      pocet_uzlu: completedNodes,
+      zbyva_beden: crates,
+      konecny_zar: heat,
+      kredity_zbytek: credits,
       cile: cileSkore,
     };
-    log.append(EVENT.RUN_ENDED, currentNodeIndex, result);
+    log.append(EVENT.RUN_ENDED, nodeSeq, result);
+  }
+
+  function findCharacter(id) {
+    const c = characters.find((x) => x.id === id);
+    if (!c) throw new Error(`Neznámá postava „${id}".`);
+    return c;
   }
 
   /* ================= veřejné API ================= */
 
   return {
-    /** Read-only snapshot stavu pro render/strategii (hluboká kopie). */
     getState() {
       return structuredClone({
         faze: phase,
         seed,
-        pronasledovatel: { id: pursuer.id, nazev: pursuer.nazev, rusenyTag: pursuer.ruseny_tag },
+        pronasledovatel: { id: pursuer.id, nazev: pursuer.nazev, rusi },
         zar: heat,
         zbyvaBeden: crates,
+        kredity: credits,
         dokoncenoUzlu: completedNodes,
-        nodeIndex: currentNodeIndex,
-        nabidka: phase === 'route' ? offered : null,
-        setkani:
-          encounter && (phase === 'play' || phase === 'rider')
+        nodeIndex: nodeSeq,
+        drzitelMapy: players.length === 3 ? characters[drzitelMapyIdx].id : null,
+        nabidka: phase === 'map' ? offered : null,
+        motelNabidka: phase === 'motel_offer' ? offered : null,
+        motel: phase === 'motel' ? { id: offered?.motel, sluzby: motely.find((m) => m.id === offered?.motel)?.sluzby ?? null } : null,
+        situace:
+          situ && (phase === 'commit' || phase === 'assign' || phase === 'confirm')
             ? {
-                druh: encounter.druh,
-                uzel: {
-                  id: encounter.uzel.id,
-                  nazev: encounter.uzel.nazev ?? null,
-                  uvod: encounter.uzel.uvod,
-                  afinity: encounter.uzel.afinity,
-                  tvrdost: encounter.uzel.tvrdost,
-                },
-                zahranePostavy: [...encounter.zahrane.keys()],
-                hlasovaliPostavy: [...encounter.hlasy.keys()],
-                hlasujici: encounter.hlasujici,
+                id: situ.def.id,
+                typ: situ.typ,
+                kind: situ.kind,
+                telegraf: situ.def.telegraf,
+                signal: situ.signal,
+                stitekParams: gangsterParams, // GANGSTER pravidlo je veřejné (telegraf hlásí verdikt zbraně)
+                commitPlan: situ.commitPlan,
+                committed: situ.committed.map((c) => ({ hrac_id: c.hrac_id, karta: { ...c.karta } })),
+                odhaleno: situ.odhaleno ? { sloty: situ.odhaleno.map((s) => ({ ...s })) } : null,
+                assignment: situ.assignment,
+                gambleUsed: situ.gambleUsed,
               }
             : null,
-        cekaNaRider: pendingRider,
         postavy: characters.map((c) => ({
           id: c.id,
           jmeno: c.jmeno,
-          zraneni: c.zraneni,
-          vyrazena: c.vyrazena,
           ruka: c.ruka.map((k) => ({ ...k })),
-          aktivniProkleta: c.aktivniProkleta ? { ...c.aktivniProkleta } : null,
-          prokletychVeFronte: c.prokleteFronta.length,
-          zoufalaVRuce: c.zoufalaVRuce ? { ...c.zoufalaVRuce } : null,
+          postihy: c.postihy.map((p) => ({ ...p })),
+          slozena: c.slozena,
+          kolDoNavratu: c.kolDoNavratu,
           cil: c.cil ? { ...c.cil } : null,
         })),
         vysledek: result,
       });
     },
 
-    /** Append-only událostní log (JSONL-serializovatelný). */
     getEvents() {
       return structuredClone(log.all());
     },
 
-    /** Legální zahrání karty pro postavu (respektuje prokleté a zoufalé). */
-    getLegalPlays(postavaId) {
-      return structuredClone(legalPlays(postavaId));
+    getHand(hracId) {
+      return structuredClone(findCharacter(hracId).ruka);
     },
 
-    /** Volba cesty (fáze route). */
-    chooseRoute(uzelId) {
-      if (phase !== 'route') throw new Error(`chooseRoute mimo fázi route (fáze: ${phase}).`);
-      if (!offered.nabidka.includes(uzelId)) {
-        throw new Error(`Uzel „${uzelId}" není v nabídce (${offered.nabidka.join(', ')}).`);
+    chooseRoute(ref) {
+      if (phase !== 'map') throw new Error(`chooseRoute mimo fázi map (fáze: ${phase}).`);
+      const volba = offered.nabidnuto.find((n) => n.ref === ref);
+      if (!volba) throw new Error(`Cesta „${ref}" není v nabídce.`);
+      log.append(EVENT.MAP_MOVE, nodeSeq, { volba: ref, typ_mista: volba.typ_mista });
+      if (volba.typ_mista === 'truhla') {
+        const truhla = truhly.find((t) => t.id === ref);
+        const [lo, hi] = truhla.odmena.kredity_rozsah;
+        changeCredits(lo + rng.int(hi - lo + 1), CREDIT_DUVOD.TRUHLA);
+        if (truhla.odmena.vyber_karty) {
+          const kdo = characters.find((c) => !c.slozena) ?? characters[0];
+          const karta = drawCard();
+          if (karta) kdo.ruka.push(karta);
+        }
+        completedNodes += 1;
+        visited.add(ref);
+        if (players.length === 3) drzitelMapyIdx = (drzitelMapyIdx + 1) % 3;
+        offered = null;
+        return nextStep();
       }
-      const uzel = offered.zatah ? zatahUzel : bezneUzly.find((u) => u.id === uzelId);
-      log.append(EVENT.ROUTE_CHOSEN, currentNodeIndex, { volba: uzelId, zatah: offered.zatah });
-      const druh = offered.zatah ? ENCOUNTER_KINDS.ZATAH : ENCOUNTER_KINDS.UZEL;
+      const kind = volba.typ_mista === 'zatah' ? ENCOUNTER_KINDS.ZATAH : ENCOUNTER_KINDS.UZEL;
+      const def = volba.typ_mista === 'zatah' ? zatahSituace : masoPool.find((s) => s.id === ref);
       offered = null;
-      startEncounter(druh, uzel);
+      startSituation(def, kind, volba.typ_mista);
     },
 
-    /** Zahrání karty postavou (fáze play). Zoufalé karty dle id z poolu. */
-    playCard(postavaId, kartaId) {
-      if (phase !== 'play') throw new Error(`playCard mimo fázi play (fáze: ${phase}).`);
-      const c = findCharacter(postavaId);
-      if (c.vyrazena) throw new Error(`Postava „${postavaId}" je vyřazena — nehraje karty.`);
-      if (encounter.zahrane.has(postavaId)) {
-        throw new Error(`Postava „${postavaId}" už v tomto uzlu kartu zahrála.`);
+    motelChoice(volba) {
+      if (phase !== 'motel_offer') throw new Error(`motelChoice mimo fázi motel_offer (fáze: ${phase}).`);
+      log.append(EVENT.MAP_MOVE, nodeSeq, { motel_odbocka: { volba } });
+      if (volba === 'ukryt') {
+        phase = 'motel';
+      } else if (volba === 'dal') {
+        offered = null;
+        offerRoutes(completedNodes + 1);
+      } else {
+        throw new Error(`Neznámá volba motelu „${volba}" (ukryt | dal).`);
       }
-      const volba = legalPlays(postavaId).find((v) => v.karta.id === kartaId);
-      if (!volba) throw new Error(`Karta „${kartaId}" není legální zahrání postavy „${postavaId}".`);
-      if (!volba.zoufala) {
+    },
+
+    spendCredits({ sluzba, hracId, postihId, kartaId }) {
+      if (phase !== 'motel') throw new Error(`spendCredits mimo fázi motel (fáze: ${phase}).`);
+      if (sluzba === 'leceni') {
+        const c = findCharacter(hracId);
+        const p = c.postihy.find((x) => x.id === postihId && x.tier === 'tezky');
+        if (!p) throw new Error(`Postava „${hracId}" nemá těžký postih „${postihId}".`);
+        if (credits < rules.kredity.leceniTezkeho) throw new Error('Nedost kreditů na léčení.');
+        changeCredits(-rules.kredity.leceniTezkeho, CREDIT_DUVOD.LECENI);
+        c.postihy = c.postihy.filter((x) => x !== p);
+        log.append(EVENT.PENALTY_HEALED, nodeSeq, { hrac_id: hracId, postih_id: postihId, cena: rules.kredity.leceniTezkeho });
+      } else if (sluzba === 'smena') {
+        const c = findCharacter(hracId);
+        if (credits < rules.kredity.smenaKarty) throw new Error('Nedost kreditů na směnu.');
         const idx = c.ruka.findIndex((k) => k.id === kartaId);
-        c.ruka.splice(idx, 1);
-      } else if (zoufalePolitika === 'pool-once' || zoufalePolitika === 'loot-node') {
-        zoufalyPool = zoufalyPool.filter((k) => k.id !== kartaId);
-      } else if (zoufalePolitika === 'dealt' || zoufalePolitika === 'loot-injury') {
-        c.zoufalaVRuce = null;
+        if (idx < 0) throw new Error(`Karta „${kartaId}" není v ruce „${hracId}".`);
+        changeCredits(-rules.kredity.smenaKarty, CREDIT_DUVOD.SMENA);
+        discardPile.push(c.ruka.splice(idx, 1)[0]);
+        const karta = drawCard();
+        if (karta) c.ruka.push(karta);
+      } else {
+        throw new Error(`Neznámá služba „${sluzba}" (leceni | smena).`);
       }
-      encounter.zahrane.set(postavaId, volba);
-      log.append(EVENT.CARD_PLAYED, currentNodeIndex, {
-        postava: postavaId,
-        karta: {
-          id: volba.karta.id,
-          tag: volba.karta.tag ?? null,
-          sila: volba.karta.sila,
-          hlucna: Boolean(volba.karta.hlucna),
-        },
-        dobrovolna: volba.dobrovolna,
-        zoufala: volba.zoufala,
+    },
+
+    leaveMotel() {
+      if (phase !== 'motel') throw new Error(`leaveMotel mimo fázi motel (fáze: ${phase}).`);
+      offered = null;
+      offerRoutes(completedNodes + 1);
+    },
+
+    commitCards(list) {
+      if (phase !== 'commit') throw new Error(`commitCards mimo fázi commit (fáze: ${phase}).`);
+      const ocekavano = situ.commitPlan.reduce((a, p) => a + p.pocet, 0);
+      if (!Array.isArray(list) || list.length !== ocekavano) {
+        throw new Error(`commitCards: očekávám přesně ${ocekavano} karet (dostal ${list?.length}).`);
+      }
+      // kontrola počtu per hráč dle commitPlan
+      const perHrac = new Map(situ.commitPlan.map((p) => [p.hrac_id, p.pocet]));
+      const dano = new Map();
+      for (const { characterId } of list) dano.set(characterId, (dano.get(characterId) ?? 0) + 1);
+      for (const [hrac, pocet] of perHrac) {
+        if ((dano.get(hrac) ?? 0) !== pocet) {
+          throw new Error(`commitCards: hráč „${hrac}" má committnout ${pocet}, dostal ${dano.get(hrac) ?? 0}.`);
+        }
+      }
+      for (const { characterId, cardId } of list) {
+        const c = findCharacter(characterId);
+        const idx = c.ruka.findIndex((k) => k.id === cardId);
+        if (idx < 0) throw new Error(`Karta „${cardId}" není v ruce „${characterId}".`);
+        const karta = c.ruka.splice(idx, 1)[0];
+        situ.committed.push({ hrac_id: characterId, karta });
+      }
+      log.append(EVENT.COMMIT, nodeSeq, {
+        commit: situ.committed.map((c) => ({
+          hrac_id: c.hrac_id,
+          karta_id: c.karta.id,
+          staty: { ...c.karta.staty },
+          stitky: c.karta.stitek ? [c.karta.stitek] : [],
+          dobrovolna: true,
+        })),
+        rozdeleni: situ.commitPlan,
+        drzitel_mapy: players.length === 3 ? characters[drzitelMapyIdx].id : null,
+      });
+      // Odhalení situace.
+      situ.odhaleno = revealSlots(situ.def, rng, rules);
+      logSituationRevealed();
+      phase = 'assign';
+    },
+
+    gamble({ handOwnerId, replacedCardId }) {
+      if (phase !== 'assign') throw new Error(`gamble mimo fázi assign (fáze: ${phase}).`);
+      if (situ.gambleUsed) throw new Error('Gamble už byl v této situaci použit.');
+      if (characters.some((c) => hasEfekt(c, 'lock_gamble'))) {
+        throw new Error('Gamble je zablokován postihem (lock_gamble).');
+      }
+      const owner = findCharacter(handOwnerId);
+      if (owner.ruka.length === 0) throw new Error(`Ruka „${handOwnerId}" je prázdná — není z čeho líznout.`);
+      const zbyvajici = owner.ruka.length;
+      const tazenaIdx = rng.int(zbyvajici);
+      const tazena = owner.ruka.splice(tazenaIdx, 1)[0];
+      const ci = situ.committed.findIndex((c) => c.karta.id === replacedCardId);
+      if (ci < 0) throw new Error(`Karta „${replacedCardId}" není mezi committnutými.`);
+      const nahrazena = situ.committed[ci].karta;
+      discardPile.push(nahrazena);
+      situ.committed[ci] = { hrac_id: handOwnerId, karta: tazena };
+      situ.gambleUsed = true;
+      log.append(EVENT.GAMBLE, nodeSeq, {
+        ci_ruka: handOwnerId,
+        zbyvajici_v_ruce: zbyvajici,
+        tazena: tazena.id,
+        nahrazena: nahrazena.id,
+        do_slotu: null,
       });
     },
 
-    /**
-     * Hlas z auta (fáze play): vyřazený hráč dá spoluhráči +1 k hodu
-     * (`{volba: 'bonus', cil}`), NEBO mu lízne prokletou (`{volba: 'prokleta', cil}`).
-     */
-    chooseVoice(postavaId, { volba, cil }) {
-      if (phase !== 'play') throw new Error(`chooseVoice mimo fázi play (fáze: ${phase}).`);
-      const c = findCharacter(postavaId);
-      if (!c.vyrazena) throw new Error(`Postava „${postavaId}" není vyřazena — hlas z auta nemá.`);
-      if (!encounter.hlasujici.includes(postavaId)) {
-        throw new Error(`Postava „${postavaId}" v tomto uzlu hlas z auta nemá.`);
+    assignToSlots(list) {
+      if (phase !== 'assign') throw new Error(`assignToSlots mimo fázi assign (fáze: ${phase}).`);
+      // Přiřazuje se tolik, kolik je committnutých karet (méně než 4 při složení).
+      if (!Array.isArray(list) || list.length !== situ.committed.length) {
+        throw new Error(`assignToSlots: očekávám přesně ${situ.committed.length} přiřazení (dostal ${list?.length}).`);
       }
-      if (encounter.hlasy.has(postavaId)) {
-        throw new Error(`Postava „${postavaId}" už hlas z auta použila.`);
-      }
-      const target = findCharacter(cil);
-      if (target.vyrazena) throw new Error(`Cíl hlasu z auta „${cil}" je vyřazen.`);
-      if (volba === 'bonus') {
-        encounter.bonusy.set(cil, (encounter.bonusy.get(cil) ?? 0) + rules.hlasZAutaBonus);
-      } else if (volba === 'prokleta') {
-        drawCursed(target);
-      } else {
-        throw new Error(`Neznámá volba hlasu z auta „${volba}" (bonus | prokleta).`);
-      }
-      encounter.hlasy.set(postavaId, { volba, cil });
+      const sloty = new Set();
+      const karty = new Set();
+      const prirazeni = list.map(({ slotIndex, cardId }) => {
+        if (sloty.has(slotIndex)) throw new Error(`Slot ${slotIndex} přiřazen dvakrát.`);
+        if (karty.has(cardId)) throw new Error(`Karta „${cardId}" přiřazena dvakrát.`);
+        sloty.add(slotIndex);
+        karty.add(cardId);
+        const commit = situ.committed.find((c) => c.karta.id === cardId);
+        if (!commit) throw new Error(`Karta „${cardId}" není mezi committnutými.`);
+        return { slot_index: slotIndex, karta_id: cardId, hrac_id: commit.hrac_id };
+      });
+      situ.assignment = prirazeni;
+      log.append(EVENT.ASSIGNMENT, nodeSeq, {
+        prirazeni,
+        navrhl: prirazeni[0]?.hrac_id ?? null,
+        souhlasili: [...new Set(prirazeni.map((p) => p.hrac_id))],
+        pocet_preskladani: 0,
+      });
+      phase = 'confirm';
     },
 
-    /** Potvrzení uzlu — spustí resoluci (může se zastavit na rider volbě). */
     confirmNode() {
-      if (phase !== 'play') throw new Error(`confirmNode mimo fázi play (fáze: ${phase}).`);
-      const nezahrali = encounter.poradi.filter((id) => !encounter.zahrane.has(id));
-      if (nezahrali.length > 0) {
-        throw new Error(`Nezahráli: ${nezahrali.join(', ')}.`);
-      }
-      const nehlasovali = encounter.hlasujici.filter((id) => !encounter.hlasy.has(id));
-      if (nehlasovali.length > 0) {
-        throw new Error(`Hlas z auta nerozhodnut: ${nehlasovali.join(', ')}.`);
-      }
-      phase = 'resolving';
-      resumeResolution();
-    },
-
-    /** Rozhodnutí rider volby (fáze rider) — pokračuje resoluce. */
-    chooseRider(postavaId, volba) {
-      if (phase !== 'rider') throw new Error(`chooseRider mimo fázi rider (fáze: ${phase}).`);
-      if (pendingRider.postava !== postavaId) {
-        throw new Error(`Rider volbu má postava „${pendingRider.postava}", ne „${postavaId}".`);
-      }
-      if (!pendingRider.volby.includes(volba)) {
-        throw new Error(`Volba „${volba}" není mezi (${pendingRider.volby.join(', ')}).`);
-      }
-      encounter.cekajiciHod.riderVolba = volba;
-      pendingRider = null;
-      phase = 'resolving';
-      resumeResolution();
+      if (phase !== 'confirm') throw new Error(`confirmNode mimo fázi confirm (fáze: ${phase}).`);
+      resolveSituation();
     },
   };
 }
