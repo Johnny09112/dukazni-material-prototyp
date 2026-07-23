@@ -89,22 +89,74 @@ export function createStrategy(spec, seed) {
       run.commitCards(out);
     },
 
-    /* -------- přiřazení do slotů -------- */
+    /* -------- gamble policy (K7) + přiřazení do slotů -------- */
     assign(state, run) {
-      const sloty = state.situace.odhaleno.sloty;
-      const karty = state.situace.committed.map((c) => c.karta);
-      const postizen = state.postavy.some((p) => p.postihy.some((x) => x.efekt?.druh === 'hide_staty'));
-      let mapping;
-      if (postizen && rng.next() < s.epsilon) {
-        mapping = randomMapping(karty.length, sloty.length, rng);
-      } else {
-        mapping = chooseAssignment(s.assign, karty, sloty, state, rng);
+      // Gamble: odhad zásahů vs kotva; ≤2/4 → jednou líznout záchranu (ne při ≥3/4).
+      if (s.gamble !== false && !state.situace.gambleUsed) {
+        const locked = state.postavy.some((p) => p.postihy.some((x) => x.efekt?.druh === 'lock_gamble'));
+        if (!locked && estimateHitsVsKotva(state) <= 2) {
+          const owner = chooseGambleHand(state);
+          const replaced = weakestCommittedId(state);
+          if (owner && replaced) {
+            run.gamble({ handOwnerId: owner, replacedCardId: replaced });
+            state = run.getState();
+          }
+        }
       }
-      const list = mapping.map((slotIdx, cardIdx) => ({ slotIndex: sloty[slotIdx].slot_index, cardId: karty[cardIdx].id }));
+
+      const sloty = state.situace.odhaleno.sloty;
+      const committed = state.situace.committed;
+      const goalByHrac = Object.fromEntries(state.postavy.map((p) => [p.id, p.cil?.id ?? null]));
+      const postizen = state.postavy.some((p) => p.postihy.some((x) => x.efekt?.druh === 'hide_staty'));
+      const opts = {
+        strat: s.assign,
+        committed,
+        sloty,
+        rusi: state.pronasledovatel?.rusi ?? null,
+        stitekParams: state.situace.stitekParams ?? null,
+        typSituace: state.situace.typ,
+        goalByHrac,
+        rng,
+      };
+      const mapping = postizen && rng.next() < s.epsilon ? randomMapping(committed.length, sloty.length, rng) : decideAssignment(opts);
+      const list = mapping.map((slotIdx, cardIdx) => ({ slotIndex: sloty[slotIdx].slot_index, cardId: committed[cardIdx].karta.id }));
       run.assignToSlots(list);
       run.confirmNode();
     },
   };
+}
+
+/* ================= gamble heuristiky ================= */
+
+/** Odhad zásahů: nejlepší rozdělení vůči KOTVĚ (bot nezná per-instance šum). */
+function estimateHitsVsKotva(state) {
+  const committed = state.situace.committed;
+  const sloty = state.situace.odhaleno.sloty;
+  const rusi = state.pronasledovatel?.rusi ?? null;
+  const stitekParams = state.situace.stitekParams ?? null;
+  const typSituace = state.situace.typ;
+  const map = decideAssignment({ strat: 'memorizacni', committed, sloty, rusi, stitekParams, typSituace });
+  let hits = 0;
+  map.forEach((slotPos, cardIdx) => {
+    const slot = sloty[slotPos];
+    if (resolveSlot({ karta: committed[cardIdx].karta, slot: { ...slot, prah: slot.kotva }, rusi, stitekParams, typSituace }).zasah) hits += 1;
+  });
+  return hits;
+}
+
+/** Čí ruka poskytne gamble: hazardérův cíl preferuje vlastní, jinak nejplnější ruka. */
+function chooseGambleHand(state) {
+  const haz = state.postavy.find((p) => p.cil?.id === 'hazarder' && p.ruka.length > 0);
+  if (haz) return haz.id;
+  const plne = state.postavy.filter((p) => p.ruka.length > 0).sort((a, b) => b.ruka.length - a.ruka.length);
+  return plne[0]?.id ?? null;
+}
+
+/** Nejslabší committnutá karta (nejnižší součet statů) → nahradí ji gamble. */
+function weakestCommittedId(state) {
+  const c = state.situace.committed;
+  if (c.length === 0) return null;
+  return c.reduce((a, b) => (statSum(a.karta) <= statSum(b.karta) ? a : b)).karta.id;
 }
 
 /* ================= commit heuristiky ================= */
@@ -154,18 +206,41 @@ function randomMapping(pocetKaret, pocetSlotu, rng) {
 }
 
 /**
- * Vrací pole `mapping[indexKarty] = pozice slotu` (délky = počet karet), tj. která
- * committnutá karta jde do kterého slotu. Volí dle strategie.
+ * Bias cíle-driven bota: bonus/postih per (karta VLASTNÍKA cíle, slot). Vytváří
+ * měřitelnou odchylku od kompetentního (týmově-optimálního) přiřazení.
  */
-function chooseAssignment(strat, karty, sloty, state, rng) {
-  const rusi = state.pronasledovatel?.rusi ?? null;
-  const M = karty.length;
+function goalBias(karta, slot, goalId) {
+  if (!goalId) return 0;
+  const LAMBDA = 3;
+  const rawStaty = Array.isArray(slot.stat) ? slot.stat : [slot.stat];
+  const pass = Math.min(...rawStaty.map((st) => karta.staty[st] ?? 0)) >= slot.kotva; // odhad vs kotva
+  const gangsterVisible = karta.stitek === 'GANGSTER' && slot.viditelnost === 'viditelna';
+  switch (goalId) {
+    case 'cista-ruka':
+      return gangsterVisible ? -100 : 0; // NIKDY zbraň do viditelné role
+    case 'dve-jizvy':
+      return pass ? -LAMBDA : LAMBDA; // toleruj/vyhledej vlastní propad (chce postihy)
+    case 'muj-den':
+    case 'bez-jizvy':
+    case 'kupecke-slovo':
+    case 'plny-zasah':
+      return pass ? LAMBDA : -LAMBDA; // tlač vlastní průchod
+    default:
+      return 0; // hazarder (řeší gamble), mozek-operace (textový)
+  }
+}
 
+/**
+ * Vrací `mapping[indexKarty] = pozice slotu` — přiřazení dle strategie.
+ * ČISTÁ funkce (testovatelná bez enginu).
+ *
+ * @param {object} p {strat, committed:[{hrac_id,karta}], sloty, rusi, stitekParams, typSituace, goalByHrac, rng}
+ */
+export function decideAssignment({ strat, committed, sloty, rusi = null, stitekParams = null, typSituace = null, goalByHrac = {}, rng = null }) {
+  const karty = committed.map((c) => c.karta);
+  const M = karty.length;
   if (strat === 'random') return randomMapping(M, sloty.length, rng);
 
-  // Skórovací funkce nad (karta, slot). GANGSTER pravidlo je veřejné (telegraf).
-  const stitekParams = state.situace.stitekParams ?? null;
-  const typSituace = state.situace.typ;
   const passVsPrah = (k, slot) => (resolveSlot({ karta: k, slot, rusi, stitekParams, typSituace }).zasah ? 1 : 0);
   const passVsKotva = (k, slot) => (resolveSlot({ karta: k, slot: { ...slot, prah: slot.kotva }, rusi, stitekParams, typSituace }).zasah ? 1 : 0);
   const rawStat = (k, slot) => {
@@ -173,11 +248,7 @@ function chooseAssignment(strat, karty, sloty, state, rng) {
     return Math.min(...staty.map((st) => (rusi?.typ === 'stat' && rusi.cil === st ? 0 : k.staty[st] ?? 0)));
   };
 
-  const scoreFn =
-    strat === 'oracle' ? passVsPrah : strat === 'memorizacni' ? passVsKotva : rawStat; // kompetentni/greedy/cile → staty
-
   if (strat === 'greedy') {
-    // pro každou kartu popořadě vyber zbylý slot s nejvyšším statem karty
     const zbyleSloty = sloty.map((_, i) => i);
     const mapping = new Array(M);
     for (let cardIdx = 0; cardIdx < M; cardIdx++) {
@@ -190,15 +261,20 @@ function chooseAssignment(strat, karty, sloty, state, rng) {
     return mapping;
   }
 
-  // oracle/memorizacni/kompetentni/cile → brute-force maximalizace Σ scoreFn
+  const base = strat === 'oracle' ? passVsPrah : strat === 'memorizacni' ? passVsKotva : rawStat;
+  const scoreFn =
+    strat === 'cile'
+      ? (k, slot, i) => rawStat(k, slot) + goalBias(k, slot, goalByHrac[committed[i].hrac_id])
+      : (k, slot) => base(k, slot);
+
   let bestMap = null;
   let bestScore = -Infinity;
   for (const perm of permutace(sloty.length)) {
     let sc = 0;
-    for (let i = 0; i < M; i++) sc += scoreFn(karty[i], sloty[perm[i]]);
+    for (let i = 0; i < M; i++) sc += scoreFn(karty[i], sloty[perm[i]], i);
     if (sc > bestScore) {
       bestScore = sc;
-      bestMap = perm.slice(0, M); // mapping[indexKarty] = pozice slotu
+      bestMap = perm.slice(0, M);
     }
   }
   return bestMap;

@@ -27,13 +27,13 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 
 /** Presety strategií (osy commit × assign × econ). */
 export const PRESETY = {
-  random: { commit: 'naivni', assign: 'random', econ: 'hoard' },
-  naivni: { commit: 'naivni', assign: 'greedy', econ: 'adaptivni' },
-  kompetentni: { commit: 'informovany', assign: 'kompetentni', econ: 'adaptivni' },
-  cile: { commit: 'informovany', assign: 'cile', econ: 'adaptivni' },
-  oracle: { commit: 'informovany', assign: 'oracle', econ: 'adaptivni' },
-  memorizacni: { commit: 'informovany', assign: 'memorizacni', econ: 'adaptivni' },
-  monokultura: { commit: 'monokultura', assign: 'kompetentni', econ: 'adaptivni' },
+  random: { commit: 'naivni', assign: 'random', econ: 'hoard', gamble: false },
+  naivni: { commit: 'naivni', assign: 'greedy', econ: 'adaptivni', gamble: true },
+  kompetentni: { commit: 'informovany', assign: 'kompetentni', econ: 'adaptivni', gamble: true },
+  cile: { commit: 'informovany', assign: 'cile', econ: 'adaptivni', gamble: true },
+  oracle: { commit: 'informovany', assign: 'oracle', econ: 'adaptivni', gamble: true },
+  memorizacni: { commit: 'informovany', assign: 'memorizacni', econ: 'adaptivni', gamble: true },
+  monokultura: { commit: 'monokultura', assign: 'kompetentni', econ: 'adaptivni', gamble: true },
 };
 
 /* ---------------- obsah ---------------- */
