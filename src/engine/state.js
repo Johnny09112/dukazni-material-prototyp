@@ -239,12 +239,15 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
     return q;
   }
 
-  /** Commit plan jen za AKTIVNÍ (nesložené) postavy — složení = méně committnutých karet. */
+  /**
+   * Commit plan jen za AKTIVNÍ (nesložené) postavy — složení i zmenšená ruka
+   * (ruka_minus) = méně committnutých karet (nikdy víc, než kolik hráč drží).
+   */
   function buildCommitPlan() {
     const q = seatQuota();
     return characters
       .filter((c) => !c.slozena)
-      .map((c) => ({ hrac_id: c.id, pocet: q.get(c.id) ?? 0 }))
+      .map((c) => ({ hrac_id: c.id, pocet: Math.min(q.get(c.id) ?? 0, c.ruka.length) }))
       .filter((p) => p.pocet > 0);
   }
 
@@ -282,10 +285,16 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
     if (c.slozena) return;
     const def = content.postihy.find((p) => p.id === postihId);
     if (!def) return;
-    // Okamžité (ihned) ztrátové efekty — aplikují se hned, do fronty nejdou.
+    // Okamžité (ihned) ztrátové efekty — aplikují se hned, do fronty nejdou (necapují).
     if (def.trvani === 'ihned') {
       applyImmediate(c, def, pricina);
       log.append(EVENT.PENALTY_ADDED, nodeSeq, penaltyPayload(c, def, pricina, 0));
+      return;
+    }
+    // Cap 2 aktivní: 3. trvalý postih se NEPŘIDÁVÁ — místo něj postava „složí"
+    // (maže lehké, těžké přetrvávají). Zabraňuje hromadění postihů nad cap.
+    if (c.postihy.length >= rules.postihy.capNaHrace) {
+      foldCharacter(c);
       return;
     }
     if (def.efekt?.druh === 'ztrata_naklad' || def.efekt?.druh === 'ztrata_kreditu' || def.efekt?.druh === 'ztrata_karty') {
@@ -294,7 +303,6 @@ export function createRun({ seed, content, rules, players, pronasledovatelId }) 
     const zbyva = def.tier === 'tezky' ? null : def.trvani;
     c.postihy.push({ id: def.id, tier: def.tier, kategorie: def.typ, efekt: def.efekt, zbyva });
     log.append(EVENT.PENALTY_ADDED, nodeSeq, penaltyPayload(c, def, pricina, c.postihy.length));
-    if (c.postihy.length > rules.postihy.capNaHrace) foldCharacter(c);
   }
 
   function penaltyPayload(c, def, pricina, aktivnich) {
