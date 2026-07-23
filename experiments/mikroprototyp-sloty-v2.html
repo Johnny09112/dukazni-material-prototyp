@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mikroprototyp v2: commit → odhalení → role</title>
+<style>
+  :root {
+    --papir:#f0e6d2; --inkoust:#3a3226; --slaba:#8a7c64; --linka:#c9bd9f;
+    --razitko:#a02c2c; --ok:#4a6b3a;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px; background:#d8ccb4; color:var(--inkoust); font-family:Georgia,'Times New Roman',serif; }
+  .list { max-width:940px; margin:0 auto; background:var(--papir); border:1px solid var(--linka);
+    box-shadow:0 2px 14px rgba(58,50,38,.25); padding:28px 32px; position:relative; }
+  .list::before { content:""; position:absolute; inset:0 auto 0 14px; width:2px; background:rgba(160,44,44,.35); }
+  h1 { font-size:1.1rem; letter-spacing:.12em; text-transform:uppercase; margin:0 0 2px; }
+  .sub { color:var(--slaba); font-size:.85rem; margin-bottom:16px; }
+  h2 { font-size:.8rem; letter-spacing:.1em; text-transform:uppercase; color:var(--slaba); margin:18px 0 8px; }
+  .intro, .plny-text { border:1px solid var(--linka); padding:12px 14px; font-style:italic; margin-bottom:12px; }
+  .faze { color:var(--razitko); font-weight:bold; font-size:.8rem; letter-spacing:.08em; text-transform:uppercase; }
+  .inventare { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .postava h3 { margin:0 0 6px; font-size:.95rem; }
+  .vec { border:1px solid var(--linka); background:#fff; padding:7px 9px; margin-bottom:6px; cursor:pointer; font-size:.85rem; }
+  .vec.zvolena { outline:3px solid var(--inkoust); }
+  .vec.utracena { opacity:.3; text-decoration:line-through; cursor:default; }
+  .vec .nazev { font-weight:bold; } .vec .stitek { color:var(--razitko); font-size:.72rem; font-weight:bold; }
+  .vec .staty { font-family:'Courier New',monospace; font-size:.72rem; color:var(--slaba); }
+  .mezera { display:inline-block; min-width:150px; border-bottom:2px dotted var(--razitko); padding:0 6px;
+    font-family:'Courier New',monospace; font-weight:bold; cursor:pointer; }
+  .mezera.obsazena { border-bottom-style:solid; }
+  .mezera.aktivni { background:rgba(160,44,44,.12); }
+  .role-pozn { font-size:.75rem; color:var(--slaba); font-style:normal; }
+  button { font-family:inherit; font-size:.92rem; padding:9px 20px; margin:12px 8px 0 0;
+    background:var(--inkoust); color:var(--papir); border:none; cursor:pointer; letter-spacing:.05em; }
+  button:disabled { opacity:.4; cursor:default; }
+  button.vedlejsi { background:transparent; color:var(--inkoust); border:1px solid var(--slaba); }
+  .radek-odhaleni { display:flex; gap:10px; align-items:baseline; padding:7px 10px; margin-bottom:6px;
+    font-size:.88rem; border-left:4px solid var(--slaba); background:rgba(255,255,255,.4); }
+  .radek-odhaleni.splnen { border-left-color:var(--ok); } .radek-odhaleni.nesplnen { border-left-color:var(--razitko); }
+  .verdikt { font-weight:bold; text-transform:uppercase; font-size:.78rem; min-width:82px; }
+  .splnen .verdikt { color:var(--ok); } .nesplnen .verdikt { color:var(--razitko); }
+  .razitko-vysledek { display:inline-block; margin-top:12px; padding:8px 18px; border:3px solid var(--razitko);
+    color:var(--razitko); font-weight:bold; letter-spacing:.16em; transform:rotate(-3deg); text-transform:uppercase; }
+  .razitko-vysledek.ok { border-color:var(--ok); color:var(--ok); }
+  .protokol { margin-top:14px; padding:14px 16px; border:1px solid var(--linka);
+    font-family:'Courier New',monospace; font-size:.88rem; line-height:1.5; background:#fbf7ee; }
+  .napoveda { color:var(--slaba); font-size:.8rem; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="list">
+  <h1>Mikroprototyp v2 — commit naslepo → odhalení → role</h1>
+  <div class="sub">Testuje: volbu 1 věci ze 4 podle telegrafu, týmové přiřazení rolí po odhalení, volitelný slot za utracení druhé věci, pásma místo procent, odhalení prahů po vyhodnocení.</div>
+  <div id="obsah"></div>
+</div>
+
+<script>
+// ---------- data (ručně, žádná AI) ----------
+// staty: U útok, O obrana, H hodnota, I improvizace, N nástroj
+const POOL = [
+  { id:'vyvar',   nazev:'Hovězí vývar',          U:0,O:0,H:1,I:3,N:1 },
+  { id:'spunt',   nazev:'Špuntovka',             U:2,O:1,H:1,I:1,N:1 },
+  { id:'precl',   nazev:'Preclíky',              U:1,O:0,H:1,I:2,N:0 },
+  { id:'prezerv', nazev:'Prezervativ',           U:0,O:1,H:1,I:4,N:2 },
+  { id:'pistole', nazev:'Pistole',               U:5,O:3,H:3,I:0,N:2, stitek:'GANGSTER' },
+  { id:'banan',   nazev:'Banánový kanón',        U:1,O:0,H:2,I:5,N:1 },
+  { id:'hodinky', nazev:'Zlaté kapesní hodinky', U:0,O:0,H:5,I:1,N:1 },
+  { id:'paratka', nazev:'Bambusová párátka',     U:1,O:0,H:0,I:2,N:3 },
+  { id:'ubrousek',nazev:'Kouzelný ubrousek',     U:0,O:1,H:1,I:4,N:2 },
+  { id:'slanina', nazev:'Plátek slaniny',        U:0,O:0,H:3,I:2,N:0 },
+  { id:'brok',    nazev:'Dědečkova brokovnice',  U:4,O:2,H:2,I:1,N:1, stitek:'GANGSTER' },
+  { id:'zitna',   nazev:'Láhev kanadské žitné',  U:1,O:0,H:4,I:1,N:0 },
+  { id:'klic',    nazev:'Francouzský klíč',      U:3,O:1,H:1,I:1,N:5 },
+  { id:'kapesnik',nazev:'Kapesník s monogramem', U:0,O:0,H:1,I:1,N:1 },
+  { id:'lano',    nazev:'Kus lodního lana',      U:1,O:2,H:0,I:1,N:4 },
+  { id:'deka',    nazev:'Koňská deka',           U:0,O:3,H:1,I:2,N:2 },
+];
+const POSTAVY = ['Bartoš','Kowalski'];
+
+// Situace: intro (telegraf) + role (povinné dle počtu postav + 1 volitelná)
+// + skryté prahy + textová šablona. GANGSTER selže ve „viditelných" rolích NPC situací.
+const SITUACE = [
+  {
+    id:'serif', nazev:'Kontrola na silnici', typ:'NPC',
+    intro:'Od západu se blíží obláček prachu a v něm služební klobouk. Vypadá to na kontrolu — a šerif okresu je vyhlášený tím, že má rád pozornost, dárky a pořádek.',
+    role:[
+      { id:'odlakani', popis:'odlákání pozornosti', stat:'improvizace', viditelna:true,
+        tajemstvi:'improvizace ≥ 3', test:v=>v.I>=3, proc:v=>`improvizace ${v.I}, potřeba ≥ 3` },
+      { id:'vsimne', popis:'všimné do dlaně', stat:'hodnota', viditelna:true,
+        tajemstvi:'hodnota ≥ 3', test:v=>v.H>=3, proc:v=>`hodnota ${v.H}, potřeba ≥ 3` },
+    ],
+    volitelna:{ id:'pojistka', popis:'pojistka pod kabátem (kdyby přituhlo)', stat:'útok', viditelna:false,
+      tajemstvi:'útok ≥ 4', test:v=>v.U>=4, proc:v=>`útok ${v.U}, potřeba ≥ 4` },
+    text:(m)=>`Šerif se nebezpečně blížil k nákladu. ${m.odlakani.kdo} se podíval a na poslední chvíli vytáhl z brašny ${m.odlakani.mez}, aby se pokusil šerifa odlákat. ${m.vsimne.kdo} pro jistotu nachystal ${m.vsimne.mez} jako všimné. ${m.pojistka ? `Pod kabátem přitom kdosi svíral ${m.pojistka.mez} — snad nebude potřeba.` : ''}`,
+    vyusteni:{
+      3:'Šerif odjel spokojený, pobavený a o něco bohatší. V hlášení uvede, že vůz vezl mléko. Parta si navíc z místa odnáší kořist.',
+      2:'Šerif odjel spokojený a o něco bohatší. Kontrola se do hlášení nedostane vůbec.',
+      1:'Šerif si něco zapsal, něco si nechal a slíbil, že se ještě uvidíte. Parta pokračuje s následky.',
+      0:'Šerif viděl víc, než měl, a dostal míň, než čekal. Následuje eskalace, kterou hlášení popisuje slovem „incident".',
+    },
+  },
+  {
+    id:'most', nazev:'Rozbitý most', typ:'PREKAZKA',
+    intro:'Před vámi řeka a most, kterému chybí prostředek. Vůz to nepřeskočí a objížďka vede kolem kasáren. Tady nikdo nikoho neuplatí — bude se improvizovat a šroubovat.',
+    role:[
+      { id:'oprava', popis:'provizorní oprava mostovky', stat:'nástroj', viditelna:false,
+        tajemstvi:'nástroj ≥ 3', test:v=>v.N>=3, proc:v=>`nástroj ${v.N}, potřeba ≥ 3` },
+      { id:'napad', popis:'šílený nápad, jak přes díru', stat:'improvizace', viditelna:false,
+        tajemstvi:'improvizace ≥ 3', test:v=>v.I>=3, proc:v=>`improvizace ${v.I}, potřeba ≥ 3` },
+    ],
+    volitelna:{ id:'zajisteni', popis:'zajištění vozu při přejezdu', stat:'obrana', viditelna:false,
+      tajemstvi:'obrana ≥ 2', test:v=>v.O>=2, proc:v=>`obrana ${v.O}, potřeba ≥ 2` },
+    text:(m)=>`Most zel dírou uprostřed. ${m.oprava.kdo} poklekl k mostovce a pustil se do díla s ${m.oprava.mez}. ${m.napad.kdo} mezitím dostal nápad, na který by střízlivý člověk nepřišel: ${m.napad.mez}. ${m.zajisteni ? `Vůz při přejezdu jistilo ${m.zajisteni.mez}.` : ''}`,
+    vyusteni:{
+      3:'Vůz přejel, most to přežil (skoro) a na druhém břehu se navíc našlo něco užitečného.',
+      2:'Vůz přejel. Most po vás nikdo nepodezřívá, protože nikdo neuvěří, že to šlo.',
+      1:'Vůz přejel, ale něco křuplo — a nebyl to most. Parta pokračuje s následky.',
+      0:'Vůz visí půlkou kola v díře a řeka si odnesla první splávek nákladu. Tohle bude drahé.',
+    },
+  },
+];
+
+// ---------- stav ----------
+let S=null, inventare=[], commit=[null,null], prirazeni={}, druhaVec=null, faze='vyber';
+
+function rozdej() {
+  const balik=[...POOL];
+  inventare = POSTAVY.map(()=>{ const inv=[]; for(let i=0;i<4;i++) inv.push(balik.splice(Math.floor(Math.random()*balik.length),1)[0]); return inv; });
+  commit=[null,null]; prirazeni={}; druhaVec=null;
+}
+function start(sit){ S=sit; rozdej(); faze='commit'; render(); }
+
+const el=(h)=>{const d=document.createElement('div'); d.innerHTML=h; return d;};
+function statyStr(v){ return `útok ${v.U} · obrana ${v.O} · hodnota ${v.H} · improvizace ${v.I} · nástroj ${v.N}`; }
+
+function render(){
+  const o=document.getElementById('obsah'); o.innerHTML='';
+  if(faze==='vyber'){
+    o.appendChild(el(`<h2>Vyber situaci k otestování</h2>`));
+    for(const sit of SITUACE){
+      const b=document.createElement('button'); b.textContent=sit.nazev; b.onclick=()=>start(sit); o.appendChild(b);
+    }
+    return;
+  }
+  o.appendChild(el(`<div class="faze">Fáze 1 — telegraf a commit naslepo</div>
+    <div class="intro">${S.intro}</div>`));
+  if(faze==='commit'){
+    o.appendChild(el(`<h2>Každá postava zvolí JEDNU věc, kterou bere do ruky (plný text situace se ukáže až potom)</h2>`));
+    const grid=el(`<div class="inventare"></div>`);
+    POSTAVY.forEach((jm,pi)=>{
+      const box=el(`<div class="postava"><h3>${jm}</h3></div>`);
+      inventare[pi].forEach(v=>{
+        const d=el(`<div class="vec ${commit[pi]===v?'zvolena':''}"><span class="nazev">${v.nazev}</span> ${v.stitek?`<span class="stitek">⚠ ${v.stitek}</span>`:''}<div class="staty">${statyStr(v)}</div></div>`);
+        d.firstChild.parentElement.onclick=()=>{ commit[pi]=(commit[pi]===v?null:v); render(); };
+        box.appendChild(d);
+      });
+      grid.appendChild(box);
+    });
+    o.appendChild(grid);
+    const b=document.createElement('button'); b.textContent='Odhalit situaci';
+    b.disabled=!(commit[0]&&commit[1]); b.onclick=()=>{ faze='prirazeni'; render(); };
+    o.appendChild(b);
+    const z=document.createElement('button'); z.className='vedlejsi'; z.textContent='Zpět na výběr situace';
+    z.onclick=()=>{ faze='vyber'; render(); }; o.appendChild(z);
+    return;
+  }
+  // fáze přiřazení + vyhodnocení
+  o.appendChild(el(`<div class="faze">Fáze 2 — odhalený text: tým rozdělí role (klik na mezeru střídá, kdo ji vezme)</div>`));
+  const m={};
+  S.role.forEach((r,i)=>{
+    const kdoIdx = prirazeni[r.id] ?? i%2;
+    m[r.id]={ kdo:POSTAVY[kdoIdx], mez:`<span class="mezera obsazena" data-role="${r.id}">${commit[kdoIdx].nazev.toUpperCase()}</span> <span class="role-pozn">(${r.popis} — počítá se ${r.stat}; ${POSTAVY[kdoIdx]})</span>` };
+  });
+  m[S.volitelna.id] = druhaVec ? { mez:`<span class="mezera obsazena">${druhaVec.vec.nazev.toUpperCase()}</span> <span class="role-pozn">(${S.volitelna.popis} — ${S.volitelna.stat}; utracená druhá věc ${POSTAVY[druhaVec.pi]})</span>` } : null;
+  const txt=el(`<div class="plny-text">${S.text(m)}</div>`);
+  txt.querySelectorAll('.mezera[data-role]').forEach(mz=>{
+    mz.onclick=()=>{ const r=mz.dataset.role; const cur=prirazeni[r] ?? S.role.findIndex(x=>x.id===r)%2;
+      // prohodit: role dostane druhou postavu; druhá role automaticky tu první
+      S.role.forEach((rr,i)=>{ prirazeni[rr.id]= rr.id===r ? 1-cur : cur; });
+      render(); };
+  });
+  o.appendChild(txt);
+
+  const volBox=el(`<div></div>`);
+  if(!druhaVec){
+    volBox.appendChild(el(`<h2>Volitelný slot: ${S.volitelna.popis} — pokryješ ho utracením DRUHÉ věci? (nemusíš)</h2>`));
+    const grid=el(`<div class="inventare"></div>`);
+    POSTAVY.forEach((jm,pi)=>{
+      const box=el(`<div class="postava"><h3>${jm} — zbývající věci</h3></div>`);
+      inventare[pi].filter(v=>v!==commit[pi]).forEach(v=>{
+        const d=el(`<div class="vec"><span class="nazev">${v.nazev}</span> ${v.stitek?`<span class="stitek">⚠ ${v.stitek}</span>`:''}<div class="staty">${statyStr(v)}</div></div>`);
+        d.firstElementChild.parentElement.onclick=()=>{ druhaVec={vec:v,pi}; render(); };
+        box.appendChild(d);
+      });
+      grid.appendChild(box);
+    });
+    volBox.appendChild(grid);
+  } else {
+    const b=document.createElement('button'); b.className='vedlejsi'; b.textContent='Vrátit druhou věc do inventáře';
+    b.onclick=()=>{ druhaVec=null; render(); }; volBox.appendChild(b);
+  }
+  o.appendChild(volBox);
+
+  const vy=document.createElement('button'); vy.textContent='Vyhodnotit situaci'; vy.onclick=vyhodnot; o.appendChild(vy);
+  const zn=document.createElement('button'); zn.className='vedlejsi'; zn.textContent='Znovu (nové inventáře)';
+  zn.onclick=()=>start(S); o.appendChild(zn);
+  o.appendChild(el(`<div class="napoveda">Prahy rolí jsou skryté — napovídá je jen telegraf a názvy rolí. Odhalí se po vyhodnocení. ⚠ GANGSTER selže ve viditelné roli NPC situace.</div>`));
+  const slot=el(`<div id="vysledek"></div>`); o.appendChild(slot);
+}
+
+function vyhodnot(){
+  const radky=[]; let zasahy=0;
+  S.role.forEach((r,i)=>{
+    const kdoIdx=prirazeni[r.id] ?? i%2; const vec=commit[kdoIdx];
+    const gangsterProblem = S.typ==='NPC' && r.viditelna && vec.stitek==='GANGSTER';
+    const ok = !gangsterProblem && r.test(vec);
+    if(ok) zasahy++;
+    radky.push({popis:r.popis, kdo:POSTAVY[kdoIdx], vec, ok,
+      proc: gangsterProblem ? '⚠ GANGSTER ve viditelné roli — šerif zbraň uviděl, role selhala bez ohledu na staty' : r.proc(vec),
+      tajemstvi:r.tajemstvi});
+  });
+  let bonus=false;
+  if(druhaVec){
+    const ok=S.volitelna.test(druhaVec.vec); bonus=ok;
+    radky.push({popis:S.volitelna.popis+' (volitelná, za druhou věc)', kdo:POSTAVY[druhaVec.pi], vec:druhaVec.vec, ok,
+      proc:S.volitelna.proc(druhaVec.vec), tajemstvi:S.volitelna.tajemstvi});
+  }
+  const skore=Math.min(3, zasahy + (bonus?1:0));
+  const nazvy={3:'HLADCE + LOOT',2:'HLADCE',1:'S NÁSLEDKY',0:'PRŮŠVIH'};
+  const v=document.getElementById('vysledek');
+  v.innerHTML=`<h2>Odhalení prahů</h2>
+    ${radky.map(r=>`<div class="radek-odhaleni ${r.ok?'splnen':'nesplnen'}">
+      <span class="verdikt">${r.ok?'✓ splněno':'✗ selhalo'}</span>
+      <span><strong>${r.vec.nazev}</strong> (${r.kdo}) — ${r.popis}<br>
+      <small>skrytý práh: ${r.tajemstvi} · realita: ${r.proc}</small></span></div>`).join('')}
+    <div class="razitko-vysledek ${skore>=2?'ok':''}">${nazvy[skore]} (${zasahy}/${S.role.length} povinných${druhaVec?`, pojistka ${bonus?'✓':'✗'}`:''})</div>
+    <div class="protokol">${S.vyusteni[skore]}</div>
+    <div class="napoveda">Utracené věci by ve hře zmizely z inventáře; loot by doplnil. Text výše by dramatizovala AI z přiřazení — staty rozhodly předem.</div>`;
+  v.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+render();
+document.getElementById('obsah').insertAdjacentHTML('beforebegin','');
+</script>
+</body>
+</html>
