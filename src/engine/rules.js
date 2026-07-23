@@ -52,8 +52,8 @@ export const RULES = {
    * hráče (u 3p prvních `2` committne držitel mapy — role rotuje po uzlu).
    */
   ruce: {
-    1: { ruka: 6, commit: [4] },
-    2: { ruka: 4, commit: [2, 2] },
+    1: { ruka: 8, commit: [4] }, // kalibrace-1: větší ruka u méně hráčů vyrovnává agency (K6a parita)
+    2: { ruka: 5, commit: [2, 2] },
     3: { ruka: 4, commit: [2, 1, 1] },
     4: { ruka: 3, commit: [1, 1, 1, 1] },
   },

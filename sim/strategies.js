@@ -242,10 +242,18 @@ export function decideAssignment({ strat, committed, sloty, rusi = null, stitekP
   if (strat === 'random') return randomMapping(M, sloty.length, rng);
 
   const passVsPrah = (k, slot) => (resolveSlot({ karta: k, slot, rusi, stitekParams, typSituace }).zasah ? 1 : 0);
-  const passVsKotva = (k, slot) => (resolveSlot({ karta: k, slot: { ...slot, prah: slot.kotva }, rusi, stitekParams, typSituace }).zasah ? 1 : 0);
   const rawStat = (k, slot) => {
     const staty = Array.isArray(slot.stat) ? slot.stat : [slot.stat];
     return Math.min(...staty.map((st) => (rusi?.typ === 'stat' && rusi.cil === st ? 0 : k.staty[st] ?? 0)));
+  };
+  // Memorizační bot ZNÁ kotvu (ne per-instance šum ±1) → maximalizuje OČEKÁVANÝ
+  // počet zásahů: P(stat ≥ kotva+šum) = clamp(margin+2, 0..3)/3. GANGSTER auto-fail
+  // se promítne jako nulová hodnota přes resolveSlot ve viditelné roli.
+  const expectedPass = (k, slot) => {
+    const auto = resolveSlot({ karta: k, slot: { ...slot, prah: -99 }, rusi, stitekParams, typSituace });
+    if (!auto.zasah) return 0; // GANGSTER auto-fail (prošel by i s prahem −99, jinak zásah)
+    const margin = rawStat(k, slot) - slot.kotva;
+    return Math.max(0, Math.min(3, margin + 2)) / 3;
   };
 
   if (strat === 'greedy') {
@@ -261,7 +269,7 @@ export function decideAssignment({ strat, committed, sloty, rusi = null, stitekP
     return mapping;
   }
 
-  const base = strat === 'oracle' ? passVsPrah : strat === 'memorizacni' ? passVsKotva : rawStat;
+  const base = strat === 'oracle' ? passVsPrah : strat === 'memorizacni' ? expectedPass : rawStat;
   const scoreFn =
     strat === 'cile'
       ? (k, slot, i) => rawStat(k, slot) + goalBias(k, slot, goalByHrac[committed[i].hrac_id])
