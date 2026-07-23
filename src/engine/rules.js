@@ -16,7 +16,7 @@
 
 export const RULES = {
   /** Verze pravidel — jde do události run_started. */
-  verze: 'v0.3 / prototyp-mvp.md 2026-07-23 (slotová resoluce v3; výchozí čísla — ladit simulací)',
+  verze: 'v0.4 / prototyp-mvp.md 2026-07-23 (v3 kalibrace-1 po D21: K1 do pásma 45–70)',
 
   /** Pět statů věci, pořadí kanonické (obsah/veci.yaml). */
   staty: /** @type {const} */ (['utok', 'obrana', 'hodnota', 'improvizace', 'nastroj']),
@@ -30,6 +30,21 @@ export const RULES = {
   kotvaMin: 2,
   kotvaMax: 4,
   sumRozsah: 1,
+  /**
+   * Globální posun kotev (kalibrační knob, ADR-003) — přičte se ke KAŽDÉ kotvě
+   * při odhalení (systematická obtížnost; ekvivalent zvednutí/snížení všech kotev
+   * v obsahu). Memorizační bot ho „zná" (baked do odhalené kotvy), takže noise
+   * model zůstává ±1 IID (D19). Cílem je najít systematický posun; finální
+   * hodnoty patří per-situace do obsahu (návrh v kalibračním reportu).
+   */
+  kotvaOffset: 0,
+  /**
+   * Jemný kalibrační knob: FRAKCE slotů (0–1), které dostanou STABILNÍ +1 ke
+   * kotvě (deterministicky dle id situace + indexu slotu — tedy naučitelné,
+   * noise model ±1 zůstává). Modeluje „část slotových kotev by měla stoupnout"
+   * bez editace obsahu; finální per-slot kotvy patří do obsahu (návrh v reportu).
+   */
+  kotvaBumpFrakce: 0.8,
 
   /**
    * Ruce a rozdělení commitu dle počtu hráčů — JEDINÁ páka na vyrovnání agency
@@ -72,9 +87,9 @@ export const RULES = {
   /** Kreditová ekonomika (společné, per-run; ceny/příjmy — mista.yaml je nese taky). */
   kredity: {
     startovni: 0,
-    /** Příjmy dle pásma. */
-    zaHladceLoot: 2, // 4/4
-    zaHladce: 1, // 3/4
+    /** Příjmy dle pásma (kalibrace-1: zvednuto, když bump ztenčil ekonomiku). */
+    zaHladceLoot: 3, // 4/4
+    zaHladce: 2, // 3/4
     /** Ceny v motelu (zrcadlí obsah/mista.yaml `sluzby`). */
     smenaKarty: 3,
     leceniTezkeho: 6,

@@ -75,6 +75,7 @@ export function createAggregate() {
     zarList: /** @type {number[]} */ ([]),
     uzluList: /** @type {number[]} */ ([]),
     gambleList: /** @type {number[]} */ ([]),
+    gambleTotal: 0,
     cilePlneni: /** @type {Record<string, {celkem:number, splneno:number}>} */ ({}),
   };
 }
@@ -99,6 +100,7 @@ export function addRun(agg, r) {
   agg.zarList.push(r.konecnyZar);
   agg.uzluList.push(r.pocetUzlu);
   agg.gambleList.push(r.gambleCount);
+  agg.gambleTotal += r.gambleCount;
   for (const c of r.cile) {
     const slot = (agg.cilePlneni[c.cil_id ?? c.cil] ??= { celkem: 0, splneno: 0 });
     slot.celkem += 1;
@@ -141,6 +143,7 @@ export function finalizeAggregate(agg) {
     zarMedian: median(agg.zarList),
     uzluMedian: median(agg.uzluList),
     gambleMedian: median(agg.gambleList),
+    gambleTakeRate: pct(agg.gambleTotal, agg.bandCount),
     cile: Object.fromEntries(Object.entries(agg.cilePlneni).map(([id, v]) => [id, pct(v.splneno, v.celkem)])),
   };
 }
@@ -159,7 +162,8 @@ export function renderSummaryMd(meta, fin) {
 - **K3 první Zátah** (medián pořadí uzlu): ${fin.prvniZatahMedian ?? '—'} | Zátah v ${fin.zatahPodilRunu} % runů
 - **K5 max_achievable:** max<4/4 v ${fin.maxAchievable.pod_4_4} % situací · max≤1/4 v ${fin.maxAchievable.do_1_4} % · průměrný gap ${fin.maxAchievable.prumerny_gap}
 - **K8 ekonomika:** medián kreditů ${fin.kreditMedian}
-- **Žár** (medián konečný): ${fin.zarMedian} | **uzlů** (medián): ${fin.uzluMedian} | **gamble** (medián/run): ${fin.gambleMedian}
+- **Žár** (medián konečný): ${fin.zarMedian} | **uzlů** (medián): ${fin.uzluMedian}
+- **K7 gamble take-rate:** ${fin.gambleTakeRate} % situací (gate ≤ 20)
 - **K9 cíle** (% splnění): ${Object.entries(fin.cile).map(([id, v]) => `${id} ${v}`).join(' · ') || '—'}
 `;
 }

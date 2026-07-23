@@ -41,22 +41,41 @@ export function slotPrah(kotva, rng, rules) {
  * @returns {object[]} odhalené sloty (s `prah`, `sum`, `typ_prahu`)
  */
 export function revealSlots(situace, rng, rules) {
+  const offset = rules.kotvaOffset ?? 0;
+  const frakce = rules.kotvaBumpFrakce ?? 0;
   return situace.sloty.map((s, i) => {
     const kombi = Array.isArray(s.stat);
     const sum = rng.int(2 * rules.sumRozsah + 1) - rules.sumRozsah;
+    // Efektivní kotva = obsahová kotva + globální posun + stabilní per-slot bump
+    // (deterministický dle id situace × index slotu → naučitelný, ne per-instance).
+    // Bump míří JEN na snadné VIDITELNÉ sloty (kotva < kotvaMax) — nezvedá už
+    // tak tvrdé ani skryté sloty, aby nevznikaly beznadějné situace (K5).
+    const bumpatelny = s.viditelnost === 'viditelna' && s.kotva < rules.kotvaMax;
+    const bump = bumpatelny && stableUnit(`${situace.id ?? ''}:${i}`) < frakce ? 1 : 0;
+    const kotva = Math.max(1, s.kotva + offset + bump);
     return {
       slot_index: i,
       role: s.role,
       stat: s.stat,
       kombi,
-      kotva: s.kotva,
+      kotva,
       sum,
-      prah: s.kotva + sum,
+      prah: kotva + sum,
       typ_prahu: kombi ? 'kombi_oba' : s.stitek_citlivy ? 'stitek' : 'jednostat',
       viditelnost: s.viditelnost,
       stitek_citlivy: s.stitek_citlivy ?? null,
     };
   });
+}
+
+/** Stabilní [0,1) z řetězce (FNV-1a) — pro deterministický per-slot bump. */
+function stableUnit(key) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0) / 4294967296;
 }
 
 /** Staty relevantní pro slot (jednostat → [stat], kombi → oba). */

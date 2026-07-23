@@ -93,13 +93,13 @@ export function playRun({ seed, content, rules = RULES, players, pronasledovatel
 }
 
 /** Odehraje dávku runů jedné konfigurace a vrátí finalizovaný souhrn. */
-export function runBatch({ content, players, pronasledovatelId, spec, strategyLabel, seedOd, runs, events }) {
+export function runBatch({ content, players, pronasledovatelId, spec, strategyLabel, seedOd, runs, events, rules = RULES }) {
   const agg = createAggregate();
   const jsonl = [];
   const hraci = content.postavy.slice(0, players).map((p) => ({ id: p.id, jmeno: p.jmeno }));
   for (let i = 0; i < runs; i++) {
     const seed = seedOd + i;
-    const log = playRun({ seed, content, players: hraci, pronasledovatelId, spec });
+    const log = playRun({ seed, content, rules, players: hraci, pronasledovatelId, spec });
     addRun(agg, collectRunStats(log));
     if (events) for (const e of log) jsonl.push(JSON.stringify(e));
   }
