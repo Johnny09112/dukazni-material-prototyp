@@ -36,19 +36,35 @@ const GANGSTER_PARAMS = {
 /* ---------- kotva ± šum ---------- */
 
 describe('slotPrah — kotva ± šum', () => {
-  it('drží prah v kotva ± 1 a je deterministický dle seedu', () => {
+  const R = RULES.sumRozsah; // kalibrace-2: 2
+
+  it('drží prah v [max(0,kotva−R), min(statMax,kotva+R)] a je deterministický dle seedu', () => {
     for (let seed = 1; seed <= 50; seed++) {
       const prah = slotPrah(3, createRng(seed), RULES);
-      expect(prah).toBeGreaterThanOrEqual(2);
-      expect(prah).toBeLessThanOrEqual(4);
+      expect(prah).toBeGreaterThanOrEqual(Math.max(0, 3 - R));
+      expect(prah).toBeLessThanOrEqual(Math.min(RULES.statMax, 3 + R));
     }
     expect(slotPrah(3, createRng(7), RULES)).toBe(slotPrah(3, createRng(7), RULES));
   });
 
-  it('pokryje celý rozsah {−1,0,+1}', () => {
+  it('pokryje celý rozsah {−R…+R} tam, kde clamp nezasahuje (kotva 3)', () => {
     const videno = new Set();
-    for (let seed = 1; seed <= 200; seed++) videno.add(slotPrah(3, createRng(seed), RULES) - 3);
-    expect([...videno].sort()).toEqual([-1, 0, 1]);
+    for (let seed = 1; seed <= 400; seed++) videno.add(slotPrah(3, createRng(seed), RULES) - 3);
+    const ocekavano = Array.from({ length: 2 * R + 1 }, (_, i) => i - R);
+    expect([...videno].sort((a, b) => a - b)).toEqual(ocekavano);
+  });
+
+  it('clamp: širší šum nedělá beznadějné sloty — prah ∈ [0, statMax] pro každou kotvu (K5)', () => {
+    for (let kotva = RULES.kotvaMin; kotva <= RULES.kotvaMax; kotva++) {
+      for (let seed = 1; seed <= 300; seed++) {
+        const prah = slotPrah(kotva, createRng(seed), RULES);
+        expect(prah).toBeGreaterThanOrEqual(0);
+        expect(prah).toBeLessThanOrEqual(RULES.statMax);
+      }
+    }
+    // kotva 4 + 2 = 6 se zastropuje na statMax (5), ne na nedosažitelných 6.
+    const maxPrah = Math.max(...Array.from({ length: 300 }, (_, i) => slotPrah(RULES.kotvaMax, createRng(i + 1), RULES)));
+    expect(maxPrah).toBe(RULES.statMax);
   });
 });
 
@@ -204,5 +220,20 @@ describe('deriveTelegrafSignal — engine derivuje ze slotů', () => {
 
   it('lokace: zbraň projde i viditelně', () => {
     expect(deriveTelegrafSignal(sloty, GANGSTER_PARAMS, 'lokace').zbran_projde).toBe('ano');
+  });
+
+  // Kalibrace-2 (D22 bod 3): pozitivní signál „zbraň se ve skrytém slotu vyplatí".
+  it('zbran_skryte = true, když nějaký SKRYTÝ slot klíčuje na utok („kdyby přituhlo")', () => {
+    expect(deriveTelegrafSignal(sloty, GANGSTER_PARAMS, 'npc').zbran_skryte).toBe(true);
+  });
+
+  it('zbran_skryte = false, když je skrytý slot obrana (párovost urednik-vaha/razitko — próza „papír > olovo")', () => {
+    const obranaSkryta = [
+      { slot_index: 0, stat: 'improvizace', kotva: 3, viditelnost: 'viditelna' },
+      { slot_index: 1, stat: 'nastroj', kotva: 3, viditelnost: 'viditelna' },
+      { slot_index: 2, stat: 'utok', kotva: 3, viditelnost: 'viditelna' }, // utok je VIDITELNÝ → nesignalizuje skrytou zbraň
+      { slot_index: 3, stat: 'obrana', kotva: 2, viditelnost: 'skryta' },
+    ];
+    expect(deriveTelegrafSignal(obranaSkryta, GANGSTER_PARAMS, 'npc').zbran_skryte).toBe(false);
   });
 });

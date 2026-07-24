@@ -64,7 +64,7 @@ export function loadContent() {
  */
 export function playRun({ seed, content, rules = RULES, players, pronasledovatelId, spec }) {
   const run = createRun({ seed, content, rules, players, pronasledovatelId });
-  const strat = createStrategy(spec, seed);
+  const strat = createStrategy(spec, seed, rules);
   let pojistka = 0;
   for (;;) {
     const s = run.getState();

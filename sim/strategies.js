@@ -18,9 +18,10 @@
 
 import { createRng } from '../src/engine/rng.js';
 import { resolveSlot } from '../src/engine/resolve.js';
+import { RULES } from '../src/engine/rules.js';
 
-/** @param {number} seed */
-export function createStrategy(spec, seed) {
+/** @param {number} seed @param {typeof RULES} [rules] pro model šumu (kalibrace-2) */
+export function createStrategy(spec, seed, rules = RULES) {
   const s = {
     commit: 'informovany',
     assign: 'kompetentni',
@@ -32,6 +33,8 @@ export function createStrategy(spec, seed) {
     ...spec,
   };
   const rng = createRng((seed ^ 0x9e3779b9) >>> 0);
+  // Model šumu, který „zná" memorizační bot (rozsah + clamp) — musí sedět s enginem.
+  const noise = { sumRozsah: rules.sumRozsah, statMax: rules.statMax };
 
   return {
     spec: s,
@@ -78,9 +81,14 @@ export function createStrategy(spec, seed) {
     /* -------- commit (naslepo dle telegrafu) -------- */
     commit(state, run) {
       const signal = state.situace.signal;
-      const demanded = effectiveDemand(signal, s, rng);
       const out = [];
       for (const plan of state.situace.commitPlan) {
+        // Bod 4 (D22): hráč s hide_telegraf z minulého uzlu NEVIDÍ telegraf →
+        // committne naivně (bez trendu i bez skryté-zbraně) → info-postih
+        // degraduje commit uzlu N+1 (snowball K2), ne jen assign (hide_staty).
+        const hrac = state.postavy.find((p) => p.id === plan.hrac_id);
+        const slepy = hrac?.postihy?.some((x) => x.efekt?.druh === 'hide_telegraf') ?? false;
+        const demanded = slepy ? [] : effectiveDemand(signal, s, rng);
         const ruka = run.getHand(plan.hrac_id).slice();
         const skore = (k) => commitScore(k, demanded, s);
         ruka.sort((a, b) => skore(b) - skore(a));
@@ -94,7 +102,7 @@ export function createStrategy(spec, seed) {
       // Gamble: odhad zásahů vs kotva; ≤2/4 → jednou líznout záchranu (ne při ≥3/4).
       if (s.gamble !== false && !state.situace.gambleUsed) {
         const locked = state.postavy.some((p) => p.postihy.some((x) => x.efekt?.druh === 'lock_gamble'));
-        if (!locked && estimateHitsVsKotva(state) <= 2) {
+        if (!locked && estimateHitsVsKotva(state, noise) <= 2) {
           const owner = chooseGambleHand(state);
           const replaced = weakestCommittedId(state);
           if (owner && replaced) {
@@ -117,6 +125,7 @@ export function createStrategy(spec, seed) {
         typSituace: state.situace.typ,
         goalByHrac,
         rng,
+        ...noise,
       };
       const mapping = postizen && rng.next() < s.epsilon ? randomMapping(committed.length, sloty.length, rng) : decideAssignment(opts);
       const list = mapping.map((slotIdx, cardIdx) => ({ slotIndex: sloty[slotIdx].slot_index, cardId: committed[cardIdx].karta.id }));
@@ -129,13 +138,13 @@ export function createStrategy(spec, seed) {
 /* ================= gamble heuristiky ================= */
 
 /** Odhad zásahů: nejlepší rozdělení vůči KOTVĚ (bot nezná per-instance šum). */
-function estimateHitsVsKotva(state) {
+function estimateHitsVsKotva(state, noise) {
   const committed = state.situace.committed;
   const sloty = state.situace.odhaleno.sloty;
   const rusi = state.pronasledovatel?.rusi ?? null;
   const stitekParams = state.situace.stitekParams ?? null;
   const typSituace = state.situace.typ;
-  const map = decideAssignment({ strat: 'memorizacni', committed, sloty, rusi, stitekParams, typSituace });
+  const map = decideAssignment({ strat: 'memorizacni', committed, sloty, rusi, stitekParams, typSituace, ...noise });
   let hits = 0;
   map.forEach((slotPos, cardIdx) => {
     const slot = sloty[slotPos];
@@ -172,8 +181,11 @@ function effectiveDemand(signal, s, rng) {
   if (s.commit === 'naivni') return [];
   // informovany: trend viditelných statů, zašuměný fidelitou
   const trend = signal.trend.flatMap((t) => (Array.isArray(t.stat) ? t.stat : [t.stat]));
-  if (rng.next() < s.fidelita) return trend;
-  return [staty[rng.int(staty.length)]]; // špatný odhad
+  const demand = rng.next() < s.fidelita ? [...trend] : [staty[rng.int(staty.length)]]; // špatný odhad
+  // Bod 3 (D22): telegraf hlásí „zbraň se ve skrytém slotu vyplatí" → informovaný
+  // hráč committne zbraň i bez viditelné poptávky útoku (samostatná fidelita).
+  if (signal.zbran_skryte && rng.next() < s.fidelita && !demand.includes('utok')) demand.push('utok');
+  return demand;
 }
 
 function commitScore(k, demanded, s) {
@@ -236,7 +248,7 @@ function goalBias(karta, slot, goalId) {
  *
  * @param {object} p {strat, committed:[{hrac_id,karta}], sloty, rusi, stitekParams, typSituace, goalByHrac, rng}
  */
-export function decideAssignment({ strat, committed, sloty, rusi = null, stitekParams = null, typSituace = null, goalByHrac = {}, rng = null }) {
+export function decideAssignment({ strat, committed, sloty, rusi = null, stitekParams = null, typSituace = null, goalByHrac = {}, rng = null, sumRozsah = 1, statMax = 5 }) {
   const karty = committed.map((c) => c.karta);
   const M = karty.length;
   if (strat === 'random') return randomMapping(M, sloty.length, rng);
@@ -246,14 +258,22 @@ export function decideAssignment({ strat, committed, sloty, rusi = null, stitekP
     const staty = Array.isArray(slot.stat) ? slot.stat : [slot.stat];
     return Math.min(...staty.map((st) => (rusi?.typ === 'stat' && rusi.cil === st ? 0 : k.staty[st] ?? 0)));
   };
-  // Memorizační bot ZNÁ kotvu (ne per-instance šum ±1) → maximalizuje OČEKÁVANÝ
-  // počet zásahů: P(stat ≥ kotva+šum) = clamp(margin+2, 0..3)/3. GANGSTER auto-fail
+  // Memorizační bot ZNÁ kotvu (ne per-instance šum) → maximalizuje OČEKÁVANÝ počet
+  // zásahů: P(stat ≥ clamp(kotva+šum, 0, statMax)) přes šum uniform v {−R…+R}.
+  // Model se počítá ze STEJNÉHO rozsahu + clampu jako engine (kalibrace-2) — jinak
+  // by byl bot mis-kalibrovaný a K4c gate by měřil artefakt. GANGSTER auto-fail
   // se promítne jako nulová hodnota přes resolveSlot ve viditelné roli.
+  const R = sumRozsah;
   const expectedPass = (k, slot) => {
     const auto = resolveSlot({ karta: k, slot: { ...slot, prah: -99 }, rusi, stitekParams, typSituace });
     if (!auto.zasah) return 0; // GANGSTER auto-fail (prošel by i s prahem −99, jinak zásah)
-    const margin = rawStat(k, slot) - slot.kotva;
-    return Math.max(0, Math.min(3, margin + 2)) / 3;
+    const stat = rawStat(k, slot);
+    let hits = 0;
+    for (let sv = -R; sv <= R; sv++) {
+      const prah = Math.max(0, Math.min(statMax, slot.kotva + sv));
+      if (stat >= prah) hits += 1;
+    }
+    return hits / (2 * R + 1);
   };
 
   if (strat === 'greedy') {

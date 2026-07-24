@@ -21,7 +21,10 @@ export const ENCOUNTER_KINDS = /** @type {const} */ ({
 });
 
 /**
- * Práh slotu = kotva + šum uniform v {−rozsah … +rozsah} ze seedovaného PRNG.
+ * Práh slotu = kotva + šum uniform v {−rozsah … +rozsah} ze seedovaného PRNG,
+ * clampnutý do [0, statMax]. Clamp (kalibrace-2 D22) brání beznadějným slotům
+ * při širším šumu: kotva 4 + 2 = 6 by nešlo trefit (stat max 5) → zastropováno
+ * na 5. Symetricky práh 0 = auto-hit (stat ≥ 0 vždy).
  * @param {number} kotva 2–4
  * @param {ReturnType<import('./rng.js').createRng>} rng
  * @param {typeof import('./rules.js').RULES} rules
@@ -30,7 +33,7 @@ export const ENCOUNTER_KINDS = /** @type {const} */ ({
 export function slotPrah(kotva, rng, rules) {
   const rozsah = rules.sumRozsah;
   const sum = rng.int(2 * rozsah + 1) - rozsah; // {−rozsah … +rozsah}
-  return kotva + sum;
+  return Math.max(0, Math.min(rules.statMax, kotva + sum));
 }
 
 /**
@@ -60,7 +63,8 @@ export function revealSlots(situace, rng, rules) {
       kombi,
       kotva,
       sum,
-      prah: kotva + sum,
+      // Clamp do [0, statMax] — širší šum (kalibrace-2) nesmí dělat beznadějné sloty (K5).
+      prah: Math.max(0, Math.min(rules.statMax, kotva + sum)),
       typ_prahu: kombi ? 'kombi_oba' : s.stitek_citlivy ? 'stitek' : 'jednostat',
       viditelnost: s.viditelnost,
       stitek_citlivy: s.stitek_citlivy ?? null,
@@ -203,16 +207,30 @@ function permutace(arr) {
   return out;
 }
 
+/** Zahrnuje stat slotu (jednostat i kombi) daný stat? */
+function slotHasStat(slot, stat) {
+  return Array.isArray(slot.stat) ? slot.stat.includes(stat) : slot.stat === stat;
+}
+
 /**
  * Derivace pravého telegraf signálu ze slotů (ADR-008) — NE autor. QA invariant:
- * trend VŠECH viditelných statů + počet skrytých („proti srsti") + verdikt zbraně.
- * Neprozrazuje kotvy/prahy.
+ * trend VŠECH viditelných statů + počet skrytých („proti srsti") + verdikt zbraně
+ * + zda se zbraň vyplatí ve SKRYTÉM slotu (kalibrace-2, D22 bod 3). Neprozrazuje
+ * kotvy/prahy.
+ *
+ * `zbran_skryte` je druhá polovina léku K7: pozitivně rozlišuje „zbraň funguje
+ * ve skrytém slotu (nějaký skrytý slot klíčuje na utok — fikce ‚kdyby přituhlo')"
+ * od „zbraň naslepo k ničemu". Tím se 10 ponechaných utok-skrytých slotů stává
+ * ODVODITELNÝMI (informovaný hráč committne zbraň i bez viditelné poptávky útoku
+ * → skrytý slot je pokryt, ne vynucený gamble). Párová podmínka přepisů
+ * urednik-vaha/razitko drží sama: jejich skrytý slot je OBRANA → zbran_skryte=false
+ * → signál nenavádí ke zbrani (žádný próza/signál drift, D19).
  *
  * @param {object[]} sloty definiční sloty situace (obsah — s `stat`, `viditelnost`)
  * @param {{chovani_dle_typu: object}} stitekParams parametry GANGSTER (obsah)
  * @param {string} typSituace npc|lokace|zatah|lecka|konfrontace
  * @returns {{trend: {slot_index: number, stat: (string|string[])}[],
- *   proti_srsti: number, zbran_projde: 'ano'|'jen_skryte'}}
+ *   proti_srsti: number, zbran_projde: 'ano'|'jen_skryte', zbran_skryte: boolean}}
  */
 export function deriveTelegrafSignal(sloty, stitekParams, typSituace) {
   const trend = sloty
@@ -222,5 +240,6 @@ export function deriveTelegrafSignal(sloty, stitekParams, typSituace) {
   const proti_srsti = sloty.filter((s) => s.viditelnost === 'skryta').length;
   const chovani = stitekParams?.chovani_dle_typu?.[typSituace];
   const zbran_projde = chovani === 'vzdy_pass' ? 'ano' : 'jen_skryte';
-  return { trend, proti_srsti, zbran_projde };
+  const zbran_skryte = sloty.some((s) => s.viditelnost === 'skryta' && slotHasStat(s, 'utok'));
+  return { trend, proti_srsti, zbran_projde, zbran_skryte };
 }

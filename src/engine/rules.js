@@ -16,7 +16,7 @@
 
 export const RULES = {
   /** Verze pravidel — jde do události run_started. */
-  verze: 'v0.4 / prototyp-mvp.md 2026-07-23 (v3 kalibrace-1 po D21: K1 do pásma 45–70)',
+  verze: 'v0.5 / prototyp-mvp.md 2026-07-23 (v3 kalibrace-2 po D22: proxy pryč, šum ±2 pro K4c)',
 
   /** Pět statů věci, pořadí kanonické (obsah/veci.yaml). */
   staty: /** @type {const} */ (['utok', 'obrana', 'hodnota', 'improvizace', 'nastroj']),
@@ -26,10 +26,17 @@ export const RULES = {
   /** Situace má přesně 4 sloty; tým committne přesně 4 karty. */
   slotu: 4,
 
-  /** Skryté prahy: kotva 2–4 (práh 0 zakázán) + šum uniform v {−1,0,+1}. */
+  /**
+   * Skryté prahy: kotva 2–4 (práh 0 zakázán) + šum uniform v {−rozsah … +rozsah}.
+   * Kalibrace-2 (D22, bod 2): šum rozšířen 1→2, aby memorizace kotvy méně
+   * predikovala per-instance práh (K4c: memorizacni − kompetentni ≤ 3). Práh se
+   * clampuje do [0, statMax] (revealSlots), takže širší šum NEvytváří beznadějné
+   * sloty (kotva 4 + 2 → 5, ne 6) — ochrana K5. Memorizační bot model zná
+   * (`decideAssignment` počítá očekávaný průchod přes týž rozsah + clamp).
+   */
   kotvaMin: 2,
   kotvaMax: 4,
-  sumRozsah: 1,
+  sumRozsah: 2,
   /**
    * Globální posun kotev (kalibrační knob, ADR-003) — přičte se ke KAŽDÉ kotvě
    * při odhalení (systematická obtížnost; ekvivalent zvednutí/snížení všech kotev
@@ -40,11 +47,12 @@ export const RULES = {
   kotvaOffset: 0,
   /**
    * Jemný kalibrační knob: FRAKCE slotů (0–1), které dostanou STABILNÍ +1 ke
-   * kotvě (deterministicky dle id situace + indexu slotu — tedy naučitelné,
-   * noise model ±1 zůstává). Modeluje „část slotových kotev by měla stoupnout"
-   * bez editace obsahu; finální per-slot kotvy patří do obsahu (návrh v reportu).
+   * kotvě (deterministicky dle id situace + indexu slotu — tedy naučitelné).
+   * Byl to PROXY za 45-slot kotva-patch (kalibrace-1). D22 patch zapečen do
+   * obsahu → kalibrace-2 (bod 1) resetuje na 0: čistý stav, K1 drží výhradně
+   * viditelné kotvy v obsahu + šum (žádný skrytý engine bump).
    */
-  kotvaBumpFrakce: 0.8,
+  kotvaBumpFrakce: 0,
 
   /**
    * Ruce a rozdělení commitu dle počtu hráčů — JEDINÁ páka na vyrovnání agency
